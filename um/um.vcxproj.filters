@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="entry.cpp" />
+    <ClCompile Include="pdb\pdb.hpp" />
+    <ClCompile Include="pdb\md5.cpp" />
+    <ClCompile Include="pdb\pdb.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="inject\inject.hpp" />
+    <ClInclude Include="driver\driver.hpp" />
+    <ClInclude Include="utils\utils.hpp" />
+    <ClInclude Include="driver\ia_32.hpp" />
+    <ClInclude Include="utils\window.hpp" />
+    <ClInclude Include="lib\sys.hpp" />
+    <ClInclude Include="mapper\intel_driver.hpp" />
+    <ClInclude Include="mapper\intel_driver_resource.hpp" />
+    <ClInclude Include="mapper\kdmapper.hpp" />
+    <ClInclude Include="mapper\nt.hpp" />
+    <ClInclude Include="mapper\portable_executable.hpp" />
+    <ClInclude Include="mapper\utils.hpp" />
+    <ClInclude Include="driver\driver_shell.hpp" />
+    <ClInclude Include="inject\dll_shell.hpp" />
+    <ClInclude Include="pdb\md5.hpp" />
+    <ClInclude Include="cli\cli.hpp" />
+  </ItemGroup>
+</Project>
