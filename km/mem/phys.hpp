@@ -1,4 +1,3 @@
-
 #pragma once
 
 // https://github.com/SamuelTulach/DirectPageManipulation

@@ -326,6 +326,7 @@ namespace mem {
                 PTE_64 pte = { 0 };
                 pte.Present = 1;
                 pte.Write = 1;
+                pte.Dirty = 1; // to be more consistent with how a pte should look when a piece of memory is marked as bad
                 pte.Supervisor = 1;
                 pte.PageFrameNumber = page_frame_number;
 
@@ -654,5 +655,6 @@ namespace mem {
 
         return reinterpret_cast<void*>(base_va);
     }
+
 
 }

@@ -13,10 +13,12 @@
 #include "mem/scan.hpp"
 #include "mem/pte.hpp"
 #include "mem/mem.hpp"
+#include "mem/detection.hpp"
 #include "utils/utils.hpp"
 #include "init.hpp"
 #include "def/request.hpp"
 
+extern "C" int _fltused = 0;
 
 namespace {
     constexpr auto request_unique = 0x92b;
@@ -219,6 +221,8 @@ namespace {
             if (!address) {
                 return 0;
             }
+
+            detections::inspect_process_page_tables(data.target_pid);
 
             reinterpret_cast<allocate_independent_pages_request*>(request->data)->address = address;
             return static_cast<std::int64_t>(request_codes::success);

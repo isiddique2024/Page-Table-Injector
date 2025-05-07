@@ -13,5 +13,6 @@
     <ClInclude Include="mem\mem.hpp" />
     <ClInclude Include="mem\pte.hpp" />
     <ClInclude Include="mem\phys.hpp" />
+    <ClInclude Include="mem\detection.hpp" />
   </ItemGroup>
 </Project>

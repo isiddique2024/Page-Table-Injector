@@ -181,6 +181,7 @@
     <ClCompile Include="entry.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="mem\detection.hpp" />
     <ClInclude Include="mem\mem.hpp" />
     <ClInclude Include="mem\phys.hpp" />
     <ClInclude Include="mem\pte.hpp" />

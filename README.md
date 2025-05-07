@@ -99,6 +99,12 @@ The tool uses three main techniques for memory allocation:
 
 This tool is designed for educational and research purposes only. It demonstrates advanced memory manipulation techniques that operate at the kernel level. Use responsibly and only on systems you own or have explicit permission to test. This is an older project of mine which I've decided to release, it is likely detected on most anti-cheat solutions by now.
 
+## Detection Test Cases
+
+I've implemented a proof of concept full page table walk detection for this project which can be found in mem/detection.hpp inside the kernel driver project. The test case can be ran by calling detections::inspect_process_page_tables with the target process id as the argument. Below is an example detection report of a low address allocation where each physical page has MMPFN.e3.ParityError set to 1.
+
+![detection_test_cases](https://github.com/user-attachments/assets/0fde3456-84d4-40d6-93b0-2940e0793b65)
+
 ## Building from Source
 
 The project requires:
