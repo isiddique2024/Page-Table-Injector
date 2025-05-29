@@ -20,9 +20,9 @@ namespace mem {
     auto safe_copy(void* const dst, void* const src, const size_t size) -> bool 
     {
         SIZE_T bytes = 0;
-        const auto current_process = IoGetCurrentProcess();
+        const auto current_process = globals::io_get_current_process();
 
-        return MmCopyVirtualMemory(
+        return globals::mm_copy_virtual_memory(
             current_process,
             src,
             current_process,
@@ -46,7 +46,7 @@ namespace mem {
 
         const auto last = current + size - 1;
 
-        if ((last < current) || (last >= MmUserProbeAddress)) {
+        if ((last < current) || (last >= (uintptr_t)globals::mm_user_probe_address)) {
             return false;
         }
 
@@ -60,13 +60,13 @@ namespace mem {
         ANSI_STRING ansi_module_name;
 
         UNICODE_STRING routine_name;
-        RtlInitUnicodeString(&routine_name, L"PsLoadedModuleList");
+        globals::rtl_init_unicode_string(&routine_name, L"PsLoadedModuleList");
 
-        const auto module_list = static_cast<PLIST_ENTRY>(MmGetSystemRoutineAddress(&routine_name));
+        const auto module_list = static_cast<PLIST_ENTRY>(globals::mm_get_system_routine_address(&routine_name));
         auto current_entry = module_list->Flink;
 
-        RtlInitAnsiString(&ansi_module_name, module_name);
-        RtlAnsiStringToUnicodeString(&unicode_module_name, &ansi_module_name, TRUE);
+        globals::rtl_init_ansi_string(&ansi_module_name, module_name);
+        globals::rtl_ansi_string_to_unicode_string(&unicode_module_name, &ansi_module_name, TRUE);
 
         while (current_entry != module_list) {
             const auto data_table_entry = CONTAINING_RECORD(
@@ -75,7 +75,7 @@ namespace mem {
                 InLoadOrderLinks
             );
 
-            if (RtlCompareUnicodeString(&data_table_entry->BaseDllName, &unicode_module_name, TRUE) == 0) {
+            if (globals::rtl_compare_unicode_string(&data_table_entry->BaseDllName, &unicode_module_name, TRUE) == 0) {
                 module_base = data_table_entry->DllBase;
                 break;
             }
@@ -83,12 +83,12 @@ namespace mem {
             current_entry = current_entry->Flink;
         }
 
-        RtlFreeUnicodeString(&unicode_module_name);
+        globals::rtl_free_unicode_string(&unicode_module_name);
         return module_base;
     }
 
     bool hide_physical_memory(void* current_va, remove_type type) {
-        const auto physical_address = mem::virtual_to_physical(current_va); // mem::virtual_to_physical
+        const auto physical_address = mem::virtual_to_physical(current_va);
         if (!physical_address.QuadPart) {
             log("ERROR", "failed to get physical address for VA: %p", current_va);
             return false;
@@ -99,24 +99,6 @@ namespace mem {
         const auto pfn_entry_addr = *reinterpret_cast<uintptr_t*>(globals::mm_pfn_db) +
             0x30 * (page_frame_number);
 
-        // store the original content of the page for verification
-        uint64_t original_page_content = 0;
-        SIZE_T bytes_read = 0;
-        MM_COPY_ADDRESS source;
-        source.PhysicalAddress = physical_address;
-
-        const auto original_copy_status = MmCopyMemory(
-            &original_page_content,
-            source,
-            sizeof(original_page_content),
-            MM_COPY_MEMORY_PHYSICAL,
-            &bytes_read
-            );
-
-        if (!NT_SUCCESS(original_copy_status)) {
-            log("ERROR", "failed to read original page content: 0x%X", original_copy_status);
-            return false;
-        }
 
         switch (type) {
             case remove_type::PFN_EXISTS_BIT: // returns 0xC0000141, STATUS_INVALID_ADDRESS, The address handle that was given to the transport was invalid.
@@ -136,77 +118,44 @@ namespace mem {
             {
                 const auto FLAGS = globals::build_version >= 26100 ? 0x62 : 0x32;
 
+                // removes PFN from MmPhysicalMemoryBlock
                 NTSTATUS status = globals::mi_remove_physical_memory(page_frame_number, 1, FLAGS);
                 if (!NT_SUCCESS(status)) {
                     log("ERROR", "failed to remove physical memory on 0x%llx status 0x%X", page_frame_number, status);
                     return false;
                 }
 
-                memset(reinterpret_cast<void*>(pfn_entry_addr), 0, 0x30);
+                // nulls PFN entry for physical page
+                globals::memset(reinterpret_cast<void*>(pfn_entry_addr), 0, 0x30);
+
+                break;
+            }
+            case remove_type::SET_LOCK_BIT:
+            {
+                // get pointers to the structures
+                auto* u2 = reinterpret_cast<_MIPFNBLINK*>(pfn_entry_addr + 0x18);
+
+                // set LockBit, causes CPU to yield when MmCopyMemory is called on your dll's physical address, think of this moreso as an anti-debug mechanism.
+                // This can be used to see if your allocation is stealthy enough.
+                u2->LockBit = 1;
 
                 break;
             }
 
-            case remove_type::MARK_PHYSICAL_MEMORY_AS_BAD:
+            case remove_type::SET_PARITY_ERROR:
             {
 
                 // get pointers to the structures
-                auto* pfn_flags = reinterpret_cast<_MI_PFN_FLAGS*>(pfn_entry_addr + 0x20);
                 auto* e3_field = reinterpret_cast<_MMPFNENTRY3*>(pfn_entry_addr + 0x23);
 
-                // set RemovalRequested
-                pfn_flags->RemovalRequested = 1;
-
-                // clear all but high word
-                pfn_flags->ReferenceCount = 0;
-                pfn_flags->PageLocation = 0;
-                pfn_flags->WriteInProgress = 0;
-                pfn_flags->Modified = 0;
-                pfn_flags->ReadInProgress = 0;
-                pfn_flags->CacheAttribute = 0;
-
-                // clear PteFrame
-                auto* u4_field = reinterpret_cast<_MI_PFN_FLAGS4*>(pfn_entry_addr + 0x28);
-                u4_field->Bits.PteFrame = 0;
-
-                // set ParityError
+                // set ParityError, causes MmCopyMemory to return 0xC0000709 (STATUS_HARDWARE_MEMORY_ERROR) on the physical pages
                 e3_field->ParityError = 1;
 
                 break;
             }
         }
 
-        uint64_t test_value = 0;
-        bytes_read = 0;
-        source.PhysicalAddress = physical_address;
-
-        const auto copy_status = MmCopyMemory(
-            &test_value,
-            source,
-            sizeof(test_value),
-            MM_COPY_MEMORY_PHYSICAL,
-            &bytes_read
-            );
-
-        if (!NT_SUCCESS(copy_status)) {
-            if (copy_status == STATUS_INVALID_ADDRESS) {
-                log("INFO", "copy failed with STATUS_INVALID_ADDRESS (expected)");
-                return true;
-            }
-            log("INFO", "copy failed with unexpected status: 0x%X", copy_status);
-            return true;
-        }
-
-        // verify if the copied data matches the original page content
-        if (test_value == original_page_content) {
-            log("ERROR", "copy succeeded and returned the original page content");
-            return false;
-        }
-        else {
-            log("INFO", "copy succeeded but returned different data (expected)");
-            log("INFO", "original: 0x%llx, copied: 0x%llx", original_page_content, test_value);
-            return true;
-        }
+        return true;
     }
 
     NTSTATUS write_page_tables(uintptr_t target_dir_base, uintptr_t base_va, size_t page_count, bool use_large_page) {
@@ -221,16 +170,29 @@ namespace mem {
             ADDRESS_TRANSLATION_HELPER helper;
             helper.AsUInt64 = current_va;
 
-            auto actual_page = (use_large_page ? MmAllocateContiguousMemory(LARGE_PAGE_SIZE, max_address) : globals::mm_allocate_independent_pages_ex(PAGE_SIZE, -1, 0, 0));
+            auto actual_page = (use_large_page ? globals::mm_allocate_contiguous_memory(LARGE_PAGE_SIZE, max_address) : globals::mm_allocate_independent_pages_ex(PAGE_SIZE, -1, 0, 0));
             if (!actual_page) {
                 log("ERROR", "failed to allocate actual page");
                 return STATUS_NO_MEMORY;
 
             }
 
-            memset(actual_page, 0, use_large_page ? LARGE_PAGE_SIZE : PAGE_SIZE);
+            globals::memset(actual_page, 0, use_large_page ? LARGE_PAGE_SIZE : PAGE_SIZE);
 
-            const auto page_frame_number = mem::virtual_to_physical(actual_page).QuadPart >> PAGE_SHIFT;
+            uintptr_t page_frame_number = 0;
+
+            if (use_large_page) {
+                PDE_64* pde_pfn = reinterpret_cast<PDE_64*>(globals::mi_get_pde_address(reinterpret_cast<uintptr_t>(actual_page)));
+                page_frame_number = pde_pfn->PageFrameNumber;
+            }
+            else {
+                page_frame_number = mem::virtual_to_physical(actual_page).QuadPart >> PAGE_SHIFT;
+            }
+
+            if (!page_frame_number) {
+                log("ERROR", "failed to get pfn from actual page");
+                return STATUS_NO_MEMORY;
+            }
 
             uintptr_t pml4_phys = target_dir_base;
             PML4E_64 pml4e = { 0 };
@@ -245,7 +207,7 @@ namespace mem {
                     return STATUS_NO_MEMORY;
                 }
 
-                memset(pdpt, 0, PAGE_SIZE);
+                globals::memset(pdpt, 0, PAGE_SIZE);
 
                 pml4e.Flags = 0;
                 pml4e.Present = 1;
@@ -254,6 +216,9 @@ namespace mem {
                 pml4e.PageFrameNumber = mem::virtual_to_physical(pdpt).QuadPart >> PAGE_SHIFT;
 
                 physical::write_physical_address(pml4_phys + helper.AsIndex.Pml4 * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64));
+
+                mem::hide_physical_memory(pdpt, remove_type::SET_PARITY_ERROR);
+
 
             }
 
@@ -268,7 +233,7 @@ namespace mem {
                     return STATUS_NO_MEMORY;
                 }
 
-                memset(pd, 0, PAGE_SIZE);
+                globals::memset(pd, 0, PAGE_SIZE);
 
                 pdpte.Flags = 0;
                 pdpte.Present = 1;
@@ -277,6 +242,8 @@ namespace mem {
                 pdpte.PageFrameNumber = mem::virtual_to_physical(pd).QuadPart >> PAGE_SHIFT;
 
                 physical::write_physical_address(PFN_TO_PAGE(pml4e.PageFrameNumber) + helper.AsIndex.Pdpt * sizeof(PDPTE_64), &pdpte, sizeof(PDPTE_64));
+
+                mem::hide_physical_memory(pd, remove_type::SET_PARITY_ERROR);
             }
 
             if (use_large_page) {
@@ -291,9 +258,12 @@ namespace mem {
                     pde.Write = 1;
                     pde.Supervisor = 1;
                     pde.LargePage = 1;
+                    pde.ExecuteDisable = 0;
                     pde.PageFrameNumber = page_frame_number;
 
                     physical::write_physical_address(PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64));
+
+                    mem::hide_physical_memory(actual_page, remove_type::SET_PARITY_ERROR);
 
                 }
             }
@@ -309,7 +279,7 @@ namespace mem {
                         return STATUS_NO_MEMORY;
                     }
 
-                    memset(pt, 0, PAGE_SIZE);
+                    globals::memset(pt, 0, PAGE_SIZE);
 
                     pde.Flags = 0;
                     pde.Present = 1;
@@ -326,70 +296,137 @@ namespace mem {
                 PTE_64 pte = { 0 };
                 pte.Present = 1;
                 pte.Write = 1;
-                pte.Dirty = 1; // to be more consistent with how a pte should look when a piece of memory is marked as bad
                 pte.Supervisor = 1;
                 pte.PageFrameNumber = page_frame_number;
 
                 physical::write_physical_address(PFN_TO_PAGE(pde.PageFrameNumber) + helper.AsIndex.Pt * sizeof(PTE_64), &pte, sizeof(PTE_64));
             }
 
-            mem::hide_physical_memory(actual_page, remove_type::MARK_PHYSICAL_MEMORY_AS_BAD);
+            mem::hide_physical_memory(actual_page, remove_type::SET_PARITY_ERROR);
 
             log("INFO", "page %zd: va: 0x%llx, pfn: 0x%llx", i, current_va, page_frame_number);
+
         }
 
         return STATUS_SUCCESS;
     }
 
-    // look for pte's where pte.PageFrame is null, hijack and replace with our own page
+    // look for PTEs where pte.PageFrame is null specifically within the .text section. probably not a good idea due to potential VAD and PTE mismatch. 
     void* hijack_null_pfn(const uint32_t local_pid, const uint32_t target_pid, const size_t size, const bool use_large_page) {
         const size_t page_mask = PAGE_SIZE - 1;
         const size_t aligned_size = (size + page_mask) & ~page_mask;
         const size_t page_count = aligned_size >> PAGE_SHIFT;
 
-        log("INFO", "searching for space of size 0x%llx (%d pages)", aligned_size, page_count);
+        log("INFO", "searching for space of size 0x%llx (%d pages) within .text section", aligned_size, page_count);
 
         PEPROCESS target_process;
-        if (PsLookupProcessByProcessId(reinterpret_cast<HANDLE>(target_pid), &target_process) != STATUS_SUCCESS) {
+        if (globals::ps_lookup_process_by_process_id(reinterpret_cast<HANDLE>(target_pid), &target_process) != STATUS_SUCCESS) {
             log("ERROR", "failed to lookup target process");
             return nullptr;
         }
 
-        physical::init();
-
+        // get target process directory base
         const auto target_dir_base = physical::get_process_directory_base(target_process);
+        if (!target_dir_base) {
+            log("ERROR", "failed to lookup target process directory base");
+            globals::obf_dereference_object(target_process);
+            return nullptr;
+        }
 
-        PPEB peb_address = PsGetProcessPeb(target_process);
+        // get target process PEB
+        PPEB peb_address = globals::ps_get_process_peb(target_process);
         if (!peb_address) {
             log("ERROR", "failed to get PEB address");
-            ObfDereferenceObject(target_process);
+            globals::obf_dereference_object(target_process);
             return nullptr;
         }
 
         PEB peb;
-        physical::read_process_memory(target_process, reinterpret_cast<ULONG64>(peb_address), &peb, sizeof(PEB));
+        physical::read_process_memory(target_process, reinterpret_cast<uintptr_t>(peb_address), &peb, sizeof(PEB));
         log("INFO", "PEB found at 0x%llx", peb_address);
 
         PEB_LDR_DATA ldr_data;
-        physical::read_process_memory(target_process, reinterpret_cast<ULONG64>(peb.Ldr), &ldr_data, sizeof(PEB_LDR_DATA));
+        physical::read_process_memory(target_process, reinterpret_cast<uintptr_t>(peb.Ldr), &ldr_data, sizeof(PEB_LDR_DATA));
 
         // get main module 
         LDR_DATA_TABLE_ENTRY main_module;
         physical::read_process_memory(target_process,
-            reinterpret_cast<ULONG64>(CONTAINING_RECORD(ldr_data.InMemoryOrderModuleList.Flink, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks)),
+            reinterpret_cast<uintptr_t>(CONTAINING_RECORD(ldr_data.InMemoryOrderModuleList.Flink, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks)),
             &main_module,
             sizeof(LDR_DATA_TABLE_ENTRY));
 
-        uintptr_t module_start = reinterpret_cast<uintptr_t>(main_module.DllBase);
-        uintptr_t module_end = module_start + main_module.SizeOfImage;
+        uintptr_t module_base = reinterpret_cast<uintptr_t>(main_module.DllBase);
 
-        log("INFO", "scanning main module range: 0x%llx - 0x%llx", module_start, module_end);
+        // read the DOS header
+        IMAGE_DOS_HEADER dos_header;
+        physical::read_process_memory(target_process, module_base, &dos_header, sizeof(IMAGE_DOS_HEADER));
+
+        if (dos_header.e_magic != IMAGE_DOS_SIGNATURE) {
+            log("ERROR", "invalid DOS header signature");
+            globals::obf_dereference_object(target_process);
+            return nullptr;
+        }
+
+        // read the NT headers
+        IMAGE_NT_HEADERS nt_headers;
+        physical::read_process_memory(target_process, module_base + dos_header.e_lfanew, &nt_headers, sizeof(IMAGE_NT_HEADERS));
+
+        if (nt_headers.Signature != IMAGE_NT_SIGNATURE) {
+            log("ERROR", "invalid NT header signature");
+            globals::obf_dereference_object(target_process);
+            return nullptr;
+        }
+
+        // calc the section headers address
+        uintptr_t section_header_addr = module_base + dos_header.e_lfanew +
+            FIELD_OFFSET(IMAGE_NT_HEADERS, OptionalHeader) +
+            nt_headers.FileHeader.SizeOfOptionalHeader;
+
+        // find the .text section
+        bool found_text_section = false;
+        uintptr_t text_section_start = 0;
+        uintptr_t text_section_end = 0;
+
+        for (WORD i = 0; i < nt_headers.FileHeader.NumberOfSections; i++) {
+            IMAGE_SECTION_HEADER section_header;
+            physical::read_process_memory(
+                target_process,
+                section_header_addr + (i * sizeof(IMAGE_SECTION_HEADER)),
+                &section_header,
+                sizeof(IMAGE_SECTION_HEADER)
+            );
+
+            // check if this is the .text section
+            // the section name might not be null-terminated, so we need to check carefully
+            if (globals::memcmp(section_header.Name, ".text", 5) == 0 ||
+                globals::memcmp(section_header.Name, "CODE", 4) == 0) {
+
+                text_section_start = module_base + section_header.VirtualAddress;
+                text_section_end = text_section_start + section_header.Misc.VirtualSize;
+                found_text_section = true;
+
+                log("INFO", "found .text section at 0x%llx - 0x%llx", text_section_start, text_section_end);
+                break;
+            }
+        }
+
+        if (!found_text_section) {
+            log("ERROR", "could not find .text section in main module");
+            globals::obf_dereference_object(target_process);
+            return nullptr;
+        }
+
+        // align to page boundaries
+        text_section_start &= ~(PAGE_SIZE - 1);  // round down to page boundary
+        text_section_end = (text_section_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);  // round up to page boundary
+
+        log("INFO", "scanning .text section range (page-aligned): 0x%llx - 0x%llx", text_section_start, text_section_end);
 
         uintptr_t base_va = 0;
         uintptr_t pml4_phys = target_dir_base;
 
-        // scan through the main module's range looking for empty/null pages
-        for (uintptr_t current_va = module_start; current_va < module_end; current_va += PAGE_SIZE) {
+        // scan through the .text section looking for empty/null pages
+        for (uintptr_t current_va = text_section_start; current_va < text_section_end; current_va += PAGE_SIZE) {
             ADDRESS_TRANSLATION_HELPER helper;
             helper.AsUInt64 = current_va;
 
@@ -415,12 +452,12 @@ namespace mem {
             PTE_64 pte = { 0 };
             physical::read_physical_address(PFN_TO_PAGE(pde.PageFrameNumber) + helper.AsIndex.Pt * sizeof(PTE_64), &pte, sizeof(PTE_64));
 
-            if(pte.PageFrameNumber == 0){
+            if (pte.PageFrameNumber == 0) {
                 // found potential page to hijack, check for continuous space
                 uintptr_t potential_start = current_va;
                 size_t available_size = 0;
 
-                while (available_size < aligned_size && current_va < module_end) {
+                while (available_size < aligned_size && current_va < text_section_end) {
                     helper.AsUInt64 = current_va;
 
                     // read through page tables again for this VA
@@ -435,7 +472,7 @@ namespace mem {
 
                     physical::read_physical_address(PFN_TO_PAGE(pde.PageFrameNumber) + helper.AsIndex.Pt * sizeof(PTE_64), &pte, sizeof(PTE_64));
 
-                    if(pte.PageFrameNumber == 0){
+                    if (pte.PageFrameNumber == 0) {
                         available_size += PAGE_SIZE;
                         current_va += PAGE_SIZE;
                     }
@@ -446,15 +483,15 @@ namespace mem {
 
                 if (available_size >= aligned_size) {
                     base_va = potential_start;
-                    log("SUCCESS", "found suitable empty/null page range at 0x%llx with size 0x%llx", base_va, available_size);
+                    log("SUCCESS", "found suitable empty/null page range within .text section at 0x%llx with size 0x%llx", base_va, available_size);
                     break;
                 }
             }
         }
 
         if (!base_va) {
-            log("ERROR", "could not find suitable empty/null page range in main module");
-            ObfDereferenceObject(target_process);
+            log("ERROR", "could not find suitable empty/null page range in .text section");
+            globals::obf_dereference_object(target_process);
             return nullptr;
         }
 
@@ -464,11 +501,11 @@ namespace mem {
 
         if (!NT_SUCCESS(write_pt_status)) {
             log("ERROR", "failed to write page tables");
-            ObfDereferenceObject(target_process);
+            globals::obf_dereference_object(target_process);
             return nullptr;
         }
 
-        ObfDereferenceObject(target_process);
+        globals::obf_dereference_object(target_process);
 
         // flush TLB and caches
         globals::ke_flush_entire_tb(TRUE, TRUE);
@@ -486,28 +523,30 @@ namespace mem {
         log("INFO", "searching for space of size 0x%llx (%d pages)", aligned_size, page_count);
 
         PEPROCESS target_process;
-        if (PsLookupProcessByProcessId(reinterpret_cast<HANDLE>(target_pid), &target_process) != STATUS_SUCCESS) {
+        if (globals::ps_lookup_process_by_process_id(reinterpret_cast<HANDLE>(target_pid), &target_process) != STATUS_SUCCESS) {
             log("ERROR", "failed to lookup target process");
             return nullptr;
         }
 
-        physical::init();
-
         const auto target_dir_base = physical::get_process_directory_base(target_process);
+        if (!target_dir_base) {
+            log("ERROR", "failed to lookup target process directory base");
+            return nullptr;
+        }
 
-        PPEB peb_address = PsGetProcessPeb(target_process);
+        PPEB peb_address = globals::ps_get_process_peb(target_process);
         if (!peb_address) {
             log("ERROR", "failed to get PEB address");
-            ObfDereferenceObject(target_process);
+            globals::obf_dereference_object(target_process);
             return nullptr;
         }
 
         PEB peb;
-        physical::read_process_memory(target_process, reinterpret_cast<ULONG64>(peb_address), &peb, sizeof(PEB));
+        physical::read_process_memory(target_process, reinterpret_cast<uintptr_t>(peb_address), &peb, sizeof(PEB));
         log("INFO", "PEB found at 0x%llx", peb_address);
 
         PEB_LDR_DATA ldr_data;
-        physical::read_process_memory(target_process, reinterpret_cast<ULONG64>(peb.Ldr), &ldr_data, sizeof(PEB_LDR_DATA));
+        physical::read_process_memory(target_process, reinterpret_cast<uintptr_t>(peb.Ldr), &ldr_data, sizeof(PEB_LDR_DATA));
 
         PLIST_ENTRY current_entry = ldr_data.InMemoryOrderModuleList.Flink;
         PLIST_ENTRY first_entry = current_entry;
@@ -519,7 +558,7 @@ namespace mem {
         do {
             LDR_DATA_TABLE_ENTRY entry;
             physical::read_process_memory(target_process,
-                reinterpret_cast<ULONG64>(CONTAINING_RECORD(current_entry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks)),
+                reinterpret_cast<uintptr_t>(CONTAINING_RECORD(current_entry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks)),
                 &entry,
                 sizeof(LDR_DATA_TABLE_ENTRY));
 
@@ -555,7 +594,7 @@ namespace mem {
 
         if (!base_va) {
             log("ERROR", "could not find suitable space between modules after checking %d modules", module_count);
-            ObfDereferenceObject(target_process);
+            globals::obf_dereference_object(target_process);
             return nullptr;
         }
 
@@ -565,11 +604,11 @@ namespace mem {
 
         if (!NT_SUCCESS(write_pt_status)) {
             log("ERROR", "failed to write page tables");
-            ObfDereferenceObject(target_process);
+            globals::obf_dereference_object(target_process);
             return nullptr;
         }
 
-        ObfDereferenceObject(target_process);
+        globals::obf_dereference_object(target_process);
 
         // Flush TLB and caches
         globals::ke_flush_entire_tb(TRUE, TRUE);
@@ -593,20 +632,23 @@ namespace mem {
 
         // get target process
         PEPROCESS target_process;
-        if (PsLookupProcessByProcessId(reinterpret_cast<HANDLE>(target_pid), &target_process) != STATUS_SUCCESS) {
+        if (globals::ps_lookup_process_by_process_id(reinterpret_cast<HANDLE>(target_pid), &target_process) != STATUS_SUCCESS) {
             log("ERROR", "failed to lookup target process");
             return nullptr;
         }
 
-        physical::init();
-
+        // get target process directory base
         const auto target_dir_base = physical::get_process_directory_base(target_process);
+        if (!target_dir_base) {
+            log("ERROR", "failed to lookup target process directory base");
+            return nullptr;
+        }
 
         // find a non-present PML4E in the appropriate address space based on use_high_address flag
         uint32_t selected_pml4_index = 0;
         PML4E_64 pml4e = { 0 };
 
-        // Set the search range based on whether high or low address is requested
+        // set the search range based on whether high or low address is requested
         uint32_t start_idx = use_high_address ? 256 : 0;
         uint32_t end_idx = use_high_address ? 511 : 256;
         const char* space_type = use_high_address ? "kernel" : "usermode";
@@ -623,17 +665,17 @@ namespace mem {
 
         if (selected_pml4_index == 0 && use_high_address) {
             log("ERROR", "failed to find a non-present PML4E in %s space", space_type);
-            ObfDereferenceObject(target_process);
+            globals::obf_dereference_object(target_process);
             return nullptr;
         }
 
         // calc the base virtual address using the selected PML4E index
         uintptr_t base_va;
         if (use_high_address) {
-            base_va = 0xFFFF000000000000ULL | (static_cast<uintptr_t>(selected_pml4_index) << 39);
+            base_va = 0xFFFF000000000000ULL | page_table::get_pml4e(selected_pml4_index);
         }
         else {
-            base_va = (static_cast<uintptr_t>(selected_pml4_index) << 39);
+            base_va = page_table::get_pml4e(selected_pml4_index);
         }
 
         log("INFO", "selected base address: 0x%llx", base_va);
@@ -642,11 +684,11 @@ namespace mem {
 
         if (!NT_SUCCESS(write_pt_status)) {
             log("ERROR", "failed to write page tables, NTSTATUS: 0x%08X", write_pt_status);
-            ObfDereferenceObject(target_process);
+            globals::obf_dereference_object(target_process);
             return nullptr;
         }
 
-        ObfDereferenceObject(target_process);
+        globals::obf_dereference_object(target_process);
 
         // flush TLB and caches
         globals::ke_flush_entire_tb(TRUE, TRUE);

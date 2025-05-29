@@ -4,7 +4,7 @@
 
 #if ENABLE_DEBUG_PRINT
 #define log(level, format, ...) \
-    DbgPrint("[=] %s: %s: " format, level, __FUNCTION__, ##__VA_ARGS__)
+    globals::dbg_print("[=] %s: %s: " format, level, __FUNCTION__, ##__VA_ARGS__)
 #else
 #define log(level, format, ...) ((void)0)
 #endif
@@ -38,7 +38,9 @@ enum remove_type {
 	PFN_EXISTS_BIT,
 	MI_REMOVE_PHYSICAL_MEMORY,
 	MM_PHYSICAL_MEMORY_BLOCK,
-	MARK_PHYSICAL_MEMORY_AS_BAD
+	MARK_PHYSICAL_MEMORY_AS_BAD,
+	SET_LOCK_BIT,
+	SET_PARITY_ERROR
 };
 
 typedef struct _RTL_PROCESS_MODULE_INFORMATION
@@ -395,6 +397,42 @@ typedef struct _PAGE_INFORMATION
 	PTE_64 *PTE;
 }PAGE_INFORMATION, *PPAGE_INFORMATION;
 
+//0x1 bytes (sizeof)
+struct _MMPFNENTRY1
+{
+	UCHAR PageLocation : 3;                                                   //0x0
+	UCHAR WriteInProgress : 1;                                                //0x0
+	UCHAR Modified : 1;                                                       //0x0
+	UCHAR ReadInProgress : 1;                                                 //0x0
+	UCHAR CacheAttribute : 2;                                                 //0x0
+};
+
+//0x8 bytes (sizeof)
+struct _MIPFNBLINK
+{
+	union
+	{
+		struct
+		{
+			ULONGLONG Blink : 40;                                             //0x0
+			ULONGLONG NodeBlinkLow : 19;                                      //0x0
+			ULONGLONG TbFlushStamp : 3;                                       //0x0
+			ULONGLONG PageBlinkDeleteBit : 1;                                 //0x0
+			ULONGLONG PageBlinkLockBit : 1;                                   //0x0
+			ULONGLONG ShareCount : 62;                                        //0x0
+			ULONGLONG PageShareCountDeleteBit : 1;                            //0x0
+			ULONGLONG PageShareCountLockBit : 1;                              //0x0
+		};
+		LONGLONG EntireField;                                               //0x0
+		struct
+		{
+			ULONGLONG LockNotUsed : 62;                                       //0x0
+			ULONGLONG DeleteBit : 1;                                          //0x0
+			ULONGLONG LockBit : 1;                                            //0x0
+		};
+	};
+};
+
 struct _MMPFNENTRY3 {
 	UCHAR Priority : 3;
 	UCHAR OnProtectedStandby : 1;
@@ -434,123 +472,205 @@ struct _MI_PFN_FLAGS4 {
 };
 
 inline namespace function_types {
-	using mm_allocate_independent_pages_ex_t = void* (__fastcall*)(
-		size_t bytes,
-		int node,
-		std::uint64_t* a3,
-		unsigned int a4
-		);
-
+	// memory management
+	using mm_allocate_independent_pages_ex_t = void* (__fastcall*)(size_t bytes, int node, std::uint64_t* a3, unsigned int a4);
 	using mm_free_independent_pages = __int64(__fastcall*)(unsigned __int64 address, unsigned __int64 bytes);
+	using mm_allocate_contiguous_memory_t = PVOID(__stdcall*)(SIZE_T number_of_bytes, PHYSICAL_ADDRESS HighestAcceptableAddress);
+	using mm_copy_memory_t = NTSTATUS(__stdcall*)(PVOID destination_address, MM_COPY_ADDRESS source_address, SIZE_T number_of_bytes, ULONG flags, PSIZE_T number_of_bytes_transferred);
+	using mm_get_virtual_for_physical_t = PVOID(__stdcall*)(PHYSICAL_ADDRESS physical_address);
+	using mm_copy_virtual_memory_t = NTSTATUS(__stdcall*)(PEPROCESS source_process, PVOID source_address, PEPROCESS target_process, PVOID target_address, SIZE_T buffer_size, KPROCESSOR_MODE previous_mode, PSIZE_T return_size);
+	using mm_mark_physical_memory_as_bad_t = NTSTATUS(__stdcall*)(PPHYSICAL_ADDRESS start_address, PLARGE_INTEGER number_of_bytes);
+	using mm_user_probe_address_t = PVOID*;
+	using mm_get_system_routine_address_t = PVOID(__stdcall*)(PUNICODE_STRING system_routine_name);
 
-	using mi_reserve_ptes_t = void*(*)(
-		std::uintptr_t mi_system_pte_info,
-		std::uintptr_t number_of_ptes
-		);
-
+	// memory info (MI) functions
+	using mi_create_decay_pfn_t = _SLIST_ENTRY*(*)();
+	using mi_get_ultra_page_t = __int64(*)(__int64 a1, char a2);
+	using mi_reserve_ptes_t = void* (*)(std::uintptr_t mi_system_pte_info, std::uintptr_t number_of_ptes);
 	using mi_get_pte_address_t = void* (*)(std::uintptr_t va);
-
+	using mi_get_pde_address_t = void* (*)(std::uintptr_t va);
 	using mi_remove_physical_memory_t = NTSTATUS(__stdcall*)(std::uintptr_t physical_page, std::uintptr_t number_of_pages, unsigned long flags);
-
 	using mi_flush_cache_range_t = __int64(__fastcall*)(std::uintptr_t physical_page, std::uintptr_t number_of_pages);
-
 	using mi_flush_entire_tb_due_to_attribute_change_t = __int64(__fastcall*)();
+	using mi_get_page_table_pfn_buddy_raw_t = PEPROCESS(__fastcall*)(void* pfn_entry);
+	using mi_set_page_table_pfn_buddy_t = __int64(__fastcall*)(__int64 pfn_entry, unsigned __int64 eprocess_maybe, char unk3);
 
-	using mi_map_contiguous_memory_large_t = __int64(__fastcall*)(ULONG_PTR bug_check_parameter2, unsigned __int64 a2, unsigned int a3, __int64 a4, DWORD* a5);
+	// proc/obj management
+	using ps_lookup_process_by_process_id_t = NTSTATUS(__stdcall*)(HANDLE process_id, PEPROCESS* process);
+	using ps_get_process_peb_t = PPEB(__fastcall*)(PEPROCESS process);
+	using ps_get_process_image_file_name_t = PCHAR(__fastcall*)(PEPROCESS process);
+	using io_get_current_process_t = PEPROCESS(__stdcall*)();
+	using obf_dereference_object_t = LONG_PTR(__fastcall*)(PVOID object);
 
-	using mi_get_large_page_t = __int64(__fastcall*)(
-		__int64 partition,
-		unsigned __int64 address,
-		unsigned int page_size_index,
-		int node,
-		unsigned int cache_type,
-		unsigned int flags,
-		__int64 coalesce_context,
-		int* heat_list
-		);
+	// executive functions
+	using ex_allocate_pool2_t = PVOID(__stdcall*)(POOL_FLAGS flags, SIZE_T number_of_bytes, ULONG tag);
+	using ex_free_pool_with_tag_t = void(__stdcall*)(PVOID p, ULONG tag);
+	using ex_get_previous_mode_t = KPROCESSOR_MODE(__stdcall*)();
 
+	// runtime library
+	using rtl_init_ansi_string_t = void(__stdcall*)(PANSI_STRING destination_string, PCSZ source_string);
+	using rtl_init_unicode_string_t = void(__stdcall*)(PUNICODE_STRING destination_string, PCWSTR source_string);
+	using rtl_ansi_string_to_unicode_string_t = NTSTATUS(__stdcall*)(PUNICODE_STRING destination_string, PCANSI_STRING source_string, BOOLEAN allocate_destination_string);
+	using rtl_compare_unicode_string_t = LONG(__stdcall*)(PCUNICODE_STRING string1, PCUNICODE_STRING string2, BOOLEAN case_in_sensitive);
+	using rtl_free_unicode_string_t = void(__stdcall*)(PUNICODE_STRING unicode_string);
+	using rtl_get_version_t = NTSTATUS(__stdcall*)(PRTL_OSVERSIONINFOW version_information);
 
-	using mi_convert_large_active_page_to_chain_t = __int64(__fastcall*)(__int64 large_page);
+	// debug
+	using dbg_print_t = ULONG(__cdecl*)(PCCH format, ...);
 
-	using ke_flush_single_tb_t = VOID(*)(PVOID virtual_address, BOOLEAN all_processors, BOOLEAN broadcast);
+	// crt functions
+	using memcpy_t = void* (__cdecl*)(void* dest, const void* src, size_t count);
+	using memset_t = void* (__cdecl*)(void* dest, int c, size_t count);
+	using memcmp_t = int (__cdecl*)(const void* buf1, const void* buf2, size_t count);
+	using strncmp_t = int(__cdecl*)(const char* str1, const char* str2, size_t count);
+	using strlen_t = size_t(__cdecl*)(const char* str);
 
+	// existing types
 	using ke_flush_entire_tb_t = VOID(*)(BOOLEAN invalid, BOOLEAN all_processors);
-
 	using ke_invalidate_all_caches_t = VOID(*)(VOID);
-
 }
 
 
 namespace globals {
 	// func address to hook in win32k.sys
 	uintptr_t hook_address = 0;
-
-	// address to shellcode that calls handler
 	void* shell_address = 0;
-
-	// size of shellcode
 	constexpr auto SHELL_SIZE = 12;
-
-	// original function used for restoring when unload
 	uintptr_t hook_pointer = 0;
-
 	uintptr_t ntos_base = 0;
 
 	function_types::ke_flush_entire_tb_t ke_flush_entire_tb = nullptr;
 	function_types::ke_invalidate_all_caches_t ke_invalidate_all_caches = nullptr;
 	function_types::mm_allocate_independent_pages_ex_t mm_allocate_independent_pages_ex = nullptr;
 	function_types::mm_free_independent_pages mm_free_independent_pages = nullptr;
+
+	function_types::mi_create_decay_pfn_t mi_create_decay_pfn = nullptr;
+	function_types::mi_get_ultra_page_t mi_get_ultra_page = nullptr;
 	function_types::mi_reserve_ptes_t mi_reserve_ptes = nullptr;
-	function_types::mi_reserve_ptes_t mi_expand_ptes = nullptr;
-	function_types::mi_reserve_ptes_t mi_empty_pte_bins = nullptr;
 	function_types::mi_get_pte_address_t mi_get_pte_address = nullptr;
+	function_types::mi_get_pde_address_t mi_get_pde_address = nullptr;
 	function_types::mi_remove_physical_memory_t mi_remove_physical_memory = nullptr;
-	function_types::mi_get_large_page_t mi_get_large_page = nullptr;
 	function_types::mi_flush_entire_tb_due_to_attribute_change_t mi_flush_entire_tb_due_to_attribute_change = nullptr;
 	function_types::mi_flush_cache_range_t mi_flush_cache_range = nullptr;
+	function_types::mi_get_page_table_pfn_buddy_raw_t mi_get_page_table_pfn_buddy_raw = nullptr;
+	function_types::mi_set_page_table_pfn_buddy_t mi_set_page_table_pfn_buddy = nullptr;
 
+	function_types::mm_allocate_contiguous_memory_t mm_allocate_contiguous_memory = nullptr;
+	function_types::mm_copy_memory_t mm_copy_memory = nullptr;
+	function_types::mm_get_virtual_for_physical_t mm_get_virtual_for_physical = nullptr;
+	function_types::mm_copy_virtual_memory_t mm_copy_virtual_memory = nullptr;
+	function_types::mm_mark_physical_memory_as_bad_t mm_mark_physical_memory_as_bad = nullptr;
+	function_types::mm_user_probe_address_t mm_user_probe_address = nullptr;
+	function_types::mm_get_system_routine_address_t mm_get_system_routine_address = nullptr;
+
+	function_types::ps_lookup_process_by_process_id_t ps_lookup_process_by_process_id = nullptr;
+	function_types::ps_get_process_peb_t ps_get_process_peb = nullptr;
+	function_types::ps_get_process_image_file_name_t ps_get_process_image_file_name = nullptr;
+	function_types::io_get_current_process_t io_get_current_process = nullptr;
+	function_types::obf_dereference_object_t obf_dereference_object = nullptr;
+
+	function_types::ex_allocate_pool2_t ex_allocate_pool2 = nullptr;
+	function_types::ex_free_pool_with_tag_t ex_free_pool_with_tag = nullptr;
+	function_types::ex_get_previous_mode_t ex_get_previous_mode = nullptr;
+
+	function_types::rtl_init_ansi_string_t rtl_init_ansi_string = nullptr;
+	function_types::rtl_init_unicode_string_t rtl_init_unicode_string = nullptr;
+	function_types::rtl_ansi_string_to_unicode_string_t rtl_ansi_string_to_unicode_string = nullptr;
+	function_types::rtl_compare_unicode_string_t rtl_compare_unicode_string = nullptr;
+	function_types::rtl_free_unicode_string_t rtl_free_unicode_string = nullptr;
+	function_types::rtl_get_version_t rtl_get_version = nullptr;
+
+	function_types::dbg_print_t dbg_print = nullptr;
+
+	function_types::memcpy_t memcpy = nullptr;
+	function_types::memset_t memset = nullptr;
+	function_types::memcmp_t memcmp = nullptr;
+	function_types::strncmp_t strncmp = nullptr;
+	function_types::strlen_t strlen = nullptr;
+
+	LONG some_dword = 0;
 	uintptr_t mm_pfn_db = 0;
 	uintptr_t mm_physical_memory_block = 0;
 	uintptr_t active_process_links = 0x0;
-
+	PEPROCESS proc = 0x0;
 	unsigned long build_version = 0;
-
 	bool initialized = false;
 }
 
 struct pdb_offsets {
+	// driver vars
+	uintptr_t DriverAllocBase;
+	uintptr_t DriverSize;
+
+	// memory management (Mm) functions
+	uintptr_t MmPfnDatabase;
+	uintptr_t MmAllocateIndependentPages;
+	uintptr_t MmFreeIndependentPages;
+	uintptr_t MmAllocateContiguousMemory;
+	uintptr_t MmCopyMemory;
+	uintptr_t MmGetVirtualForPhysical;
+	uintptr_t MmCopyVirtualMemory;
+	uintptr_t MmMarkPhysicalMemoryAsBad;
+	uintptr_t MmUserProbeAddress;
+	uintptr_t MmGetSystemRoutineAddress;
+
+	// memory info (Mi) functions
+	uintptr_t MiCreateDecayPfn;
+	uintptr_t MiGetUltraPage;
 	uintptr_t MiReservePtes;
 	uintptr_t MiGetPteAddress;
+	uintptr_t MiGetPdeAddress;
 	uintptr_t MiSystemPartition;
 	uintptr_t MiInitializePfn;
 	uintptr_t MiGetPage;
-	uintptr_t MmAllocateIndependentPages;
-	uintptr_t MmFreeIndependentPages;
 	uintptr_t MiWaitForFreePage;
 	uintptr_t MiRemovePhysicalMemory;
 	uintptr_t MiFlushEntireTbDueToAttributeChange;
 	uintptr_t MiFlushCacheRange;
 	uintptr_t MiPinDriverAddressLog;
+	uintptr_t MiGetPageTablePfnBuddyRaw;
+	uintptr_t MiSetPageTablePfnBuddy;
+
+	// proc/obj management functions
+	uintptr_t PsLookupProcessByProcessId;
+	uintptr_t PsGetProcessPeb;
+	uintptr_t PsGetProcessImageFileName;
+	uintptr_t IoGetCurrentProcess;
+	uintptr_t ObfDereferenceObject;
+
+	// executive functions
+	uintptr_t ExAllocatePool2;
+	uintptr_t ExFreePoolWithTag;
+	uintptr_t ExGetPreviousMode;
+
+	// runtime library functions
+	uintptr_t RtlInitAnsiString;
+	uintptr_t RtlInitUnicodeString;
+	uintptr_t RtlAnsiStringToUnicodeString;
+	uintptr_t RtlCompareUnicodeString;
+	uintptr_t RtlFreeUnicodeString;
+	uintptr_t RtlGetVersion;
+
+	// debug functions
+	uintptr_t DbgPrint;
+
+	// crt functions
+	uintptr_t memcpy;
+	uintptr_t memset;
+	uintptr_t memcmp;
+	uintptr_t strncmp;
+	uintptr_t strlen;
+
+	// struct offsets
 	uintptr_t ActiveProcessLinks;
 };
 
-extern "C"
-{
-	NTSTATUS NTAPI MmCopyVirtualMemory(
-		PEPROCESS SourceProcess,
-		PVOID SourceAddress,
-		PEPROCESS TargetProcess,
-		PVOID TargetAddress,
-		SIZE_T BufferSize,
-		KPROCESSOR_MODE PreviousMode,
-		PSIZE_T ReturnSize
-	);
-
-	NTKERNELAPI PPEB PsGetProcessPeb(IN PEPROCESS Process);
-
-	NTSTATUS NTAPI MmMarkPhysicalMemoryAsBad(
-		IN PPHYSICAL_ADDRESS StartAddress, 
-		IN OUT PLARGE_INTEGER NumberOfBytes
-	);
-
+#pragma function(memset) 
+extern "C" {
+	void* memset(void* dest, int value, size_t count) {
+		_ReadWriteBarrier();
+		__stosb((unsigned char*)dest, (unsigned char)value, count);
+		_ReadWriteBarrier();
+		return dest;
+	}
 }

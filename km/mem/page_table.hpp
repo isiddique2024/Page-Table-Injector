@@ -1,6 +1,5 @@
 #pragma once
-#include "mem/mem.hpp"
-namespace pte {
+namespace page_table {
 
     auto get_page_information(const void* va, const CR3 cr3) -> PAGE_INFORMATION
     {
@@ -19,7 +18,7 @@ namespace pte {
 
         pa.QuadPart = cr3.AddressOfPageDirectory << PAGE_SHIFT;
 
-        pml4 = reinterpret_cast<PML4E_64*>(MmGetVirtualForPhysical(pa));
+        pml4 = reinterpret_cast<PML4E_64*>(globals::mm_get_virtual_for_physical(pa));
 
         pml4e = &pml4[helper.AsIndex.Pml4];
 
@@ -36,7 +35,7 @@ namespace pte {
 
         pa.QuadPart = pml4e->PageFrameNumber << PAGE_SHIFT;
 
-        pdpt = reinterpret_cast<PDPTE_64*>(MmGetVirtualForPhysical(pa));
+        pdpt = reinterpret_cast<PDPTE_64*>(globals::mm_get_virtual_for_physical(pa));
 
         pdpte = &pdpt[helper.AsIndex.Pdpt];
 
@@ -52,7 +51,7 @@ namespace pte {
 
         pa.QuadPart = pdpte->PageFrameNumber << PAGE_SHIFT;
 
-        pd = reinterpret_cast<PDE_64*>(MmGetVirtualForPhysical(pa));
+        pd = reinterpret_cast<PDE_64*>(globals::mm_get_virtual_for_physical(pa));
 
         pde = &pd[helper.AsIndex.Pd];
 
@@ -67,7 +66,7 @@ namespace pte {
 
         pa.QuadPart = pde->PageFrameNumber << PAGE_SHIFT;
 
-        pt = reinterpret_cast<PTE_64*>(MmGetVirtualForPhysical(pa));
+        pt = reinterpret_cast<PTE_64*>(globals::mm_get_virtual_for_physical(pa));
 
         pte = &pt[helper.AsIndex.Pt];
 
@@ -156,7 +155,7 @@ namespace pte {
         const auto* section = IMAGE_FIRST_SECTION(nt_headers);
 
         for (uint16_t i = 0; i < nt_headers->FileHeader.NumberOfSections; ++i, ++section) {
-            if (!strncmp(reinterpret_cast<const char*>(section->Name), section_name, section_name_len)) {
+            if (!globals::strncmp(reinterpret_cast<const char*>(section->Name), section_name, section_name_len)) {
                 *size = section->Misc.VirtualSize;
                 return reinterpret_cast<uint8_t*>(base) + section->VirtualAddress;
             }
@@ -231,6 +230,23 @@ namespace pte {
         }
 
         return success;
+    }
+
+
+    uintptr_t get_pml4e(uint32_t pml4_idx) {
+        return static_cast<uintptr_t>(pml4_idx) << 39;
+    }
+
+    uintptr_t get_pdpt(uint32_t pdpt_idx) {
+        return static_cast<uintptr_t>(pdpt_idx) << 30;
+    }
+
+    uintptr_t get_pd(uint32_t pd_idx) {
+        return static_cast<uintptr_t>(pd_idx) << 21;
+    }
+
+    uintptr_t get_pt(uint32_t pt_idx) {
+        return static_cast<uintptr_t>(pt_idx) << 12;
     }
 
 }

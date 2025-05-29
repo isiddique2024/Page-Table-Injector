@@ -141,7 +141,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
-      <FunctionLevelLinking>false</FunctionLevelLinking>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -160,21 +160,38 @@
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <OmitDefaultLibName>true</OmitDefaultLibName>
       <ControlFlowGuard>false</ControlFlowGuard>
+      <RuntimeLibrary>
+      </RuntimeLibrary>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <CallingConvention>FastCall</CallingConvention>
+      <CompileAs>CompileAsCpp</CompileAs>
     </ClCompile>
     <Link>
       <SubSystem>Native</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>false</GenerateDebugInformation>
-      <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
+      <IgnoreAllDefaultLibraries>true</IgnoreAllDefaultLibraries>
       <MinimumRequiredVersion>$(SUBSYSTEM_NATVER)</MinimumRequiredVersion>
       <Driver>Driver</Driver>
       <EntryPointSymbol>entry</EntryPointSymbol>
       <RandomizedBaseAddress />
       <DataExecutionPrevention />
       <SetChecksum>true</SetChecksum>
-      <AdditionalDependencies>%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>
+      </AdditionalDependencies>
       <ProgramDatabaseFile />
+      <HeapReserveSize>
+      </HeapReserveSize>
+      <HeapCommitSize>
+      </HeapCommitSize>
+      <StackReserveSize>
+      </StackReserveSize>
+      <StackCommitSize>
+      </StackCommitSize>
+      <LinkTimeCodeGeneration>
+      </LinkTimeCodeGeneration>
+      <MergeSections>_TEXT=.text;_PAGE=PAGE;.rdata=.text</MergeSections>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -184,7 +201,7 @@
     <ClInclude Include="mem\detection.hpp" />
     <ClInclude Include="mem\mem.hpp" />
     <ClInclude Include="mem\phys.hpp" />
-    <ClInclude Include="mem\pte.hpp" />
+    <ClInclude Include="mem\page_table.hpp" />
     <ClInclude Include="init.hpp" />
     <ClInclude Include="def\ia32.hpp" />
     <ClInclude Include="def\request.hpp" />

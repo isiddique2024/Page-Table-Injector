@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cwctype>
 #include <locale>
-
 //#define DISABLE_OUTPUT 1
 #if defined(DISABLE_OUTPUT)
 #define Log(content) 

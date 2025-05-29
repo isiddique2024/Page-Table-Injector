@@ -36,6 +36,7 @@
     <ClInclude Include="mapper\intel_driver_resource.hpp" />
     <ClInclude Include="mapper\kdmapper.hpp" />
     <ClInclude Include="mapper\nt.hpp" />
+    <ClInclude Include="mapper\phys.hpp" />
     <ClInclude Include="mapper\portable_executable.hpp" />
     <ClInclude Include="mapper\utils.hpp" />
     <ClInclude Include="pdb\md5.hpp" />

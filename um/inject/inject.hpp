@@ -121,7 +121,7 @@ private:
         // calculate final buffer size based on page type
         std::size_t buffer_size;
         if (use_large_pages) {
-            constexpr size_t LARGE_PAGE_SIZE = 0x200000;
+            //constexpr size_t LARGE_PAGE_SIZE = 0x200000;
             constexpr size_t LARGE_PAGE_MASK = LARGE_PAGE_SIZE - 1;
             buffer_size = (total_mapping_size + LARGE_PAGE_MASK) & ~LARGE_PAGE_MASK;
             log("INFO", "original size: %zu bytes, aligned size: %zu bytes", total_mapping_size, buffer_size);
@@ -152,7 +152,7 @@ private:
         // write buffer to target process memory
         if (use_large_pages) {
             // split into 2MB chunks for large pages
-            constexpr size_t LARGE_PAGE_SIZE = 0x200000;
+            //constexpr size_t LARGE_PAGE_SIZE = 0x200000;
             for (size_t offset = 0; offset < buffer_size; offset += LARGE_PAGE_SIZE) {
                 size_t chunk_size = min(LARGE_PAGE_SIZE, buffer_size - offset);
                 log("INFO", "writing large page chunk at offset 0x%zx, size: %zu bytes", offset, chunk_size);
@@ -396,7 +396,7 @@ private:
             pid,
             0x1000,
             0,
-            driver->alloc_mode::ALLOC_BETWEEN_LEGIT_MODULES
+            driver->alloc_mode::ALLOC_AT_LOW_ADDRESS
         );
 
         if (remote_shellcode == NULL) {
@@ -488,7 +488,7 @@ public:
 
         log("SUCCESS", "resolved imports");
 
-        if (!map_sections(pid, dll_alloc_base, buffer, nt_header, memory_type)) { 
+        if (!map_sections(pid, dll_alloc_base, buffer, nt_header, 0)) {  // memory_type
             log("ERROR", "failed to map sections");
             return false;
         }

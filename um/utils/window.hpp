@@ -74,7 +74,7 @@ public:
 
 private:
     bool nt_enum_windows(WNDENUMPROC lp_enum_func, LPARAM l_param) {
-        constexpr NTSTATUS STATUS_BUFFER_TOO_SMALL = static_cast<NTSTATUS>(0xC0000023);
+        // NTSTATUS STATUS_BUFFER_TOO_SMALL = static_cast<NTSTATUS>(0xC0000023);
         const unsigned int initial_hwnd_count = 1024;
         std::vector<HWND> hwnds(initial_hwnd_count);
         unsigned int hwnds_found = 0;
@@ -83,7 +83,7 @@ private:
             nullptr, nullptr, false, false, 0,
             static_cast<unsigned int>(hwnds.size()), hwnds.data(), &hwnds_found
         );
-        if (nt_status == STATUS_BUFFER_TOO_SMALL) {
+        if (nt_status == 0xC0000023) {
             hwnds.resize(hwnds_found);
             nt_status = shadowcall<NTSTATUS>(
                 { "NtUserBuildHwndList", "win32u.dll" },

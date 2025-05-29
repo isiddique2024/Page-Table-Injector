@@ -9,23 +9,23 @@
 
 #include "def/ia32.hpp"
 #include "def/def.hpp"
+#include "mem/page_table.hpp"
 #include "mem/phys.hpp"
 #include "mem/scan.hpp"
-#include "mem/pte.hpp"
 #include "mem/mem.hpp"
 #include "mem/detection.hpp"
 #include "utils/utils.hpp"
 #include "init.hpp"
 #include "def/request.hpp"
 
-extern "C" int _fltused = 0;
+//extern "C" int _fltused = 0;
 
 namespace {
     constexpr auto request_unique = 0x92b;
     class request_handler {
     public:
         static auto handle(PVOID a1, PINT64 status) -> INT64 {
-            if (ExGetPreviousMode() != UserMode) {
+            if (globals::ex_get_previous_mode() != UserMode) {
                 return reinterpret_cast<decltype(&request_handler::handle)>(globals::hook_pointer)(a1, status);
             }
 
@@ -105,24 +105,20 @@ namespace {
                 return 0;
             }
 
-            NTSTATUS status = physical::init();
-            if (!NT_SUCCESS(status))
-                return 0;
-
             PEPROCESS target_process;
-            if (PsLookupProcessByProcessId(reinterpret_cast<HANDLE>(data.pid), &target_process) != STATUS_SUCCESS) {
+            if (globals::ps_lookup_process_by_process_id(reinterpret_cast<HANDLE>(data.pid), &target_process) != STATUS_SUCCESS) {
                 return 0;
             }
 
-            status = physical::copy_memory(
-                IoGetCurrentProcess(),
+            NTSTATUS status = physical::copy_memory(
+                globals::io_get_current_process(),
                 reinterpret_cast<void*>(data.buffer),
                 target_process,
                 (void*)data.address,
                 data.size
             );
 
-            ObfDereferenceObject(target_process);
+            globals::obf_dereference_object(target_process);
 
             if (!NT_SUCCESS(status)) {
                 return 0;
@@ -140,24 +136,20 @@ namespace {
                 return 0;
             }
 
-            NTSTATUS status = physical::init();
-            if (!NT_SUCCESS(status))
-                return 0;
-
             PEPROCESS target_process;
-            if (PsLookupProcessByProcessId(reinterpret_cast<HANDLE>(data.pid), &target_process) != STATUS_SUCCESS) {
+            if (globals::ps_lookup_process_by_process_id(reinterpret_cast<HANDLE>(data.pid), &target_process) != STATUS_SUCCESS) {
                 return 0;
             }
 
-            status = physical::copy_memory(
+            NTSTATUS status = physical::copy_memory(
                 target_process,                
                 (void*)data.address,           
-                IoGetCurrentProcess(),     
+                globals::io_get_current_process(),     
                 reinterpret_cast<void*>(data.buffer), 
                 data.size                     
             );
 
-            ObfDereferenceObject(target_process);
+            globals::obf_dereference_object(target_process);
 
             if (!NT_SUCCESS(status)) {
                 return 0;
@@ -222,7 +214,7 @@ namespace {
                 return 0;
             }
 
-            detections::inspect_process_page_tables(data.target_pid);
+            //detections::inspect_process_page_tables(data.target_pid);
 
             reinterpret_cast<allocate_independent_pages_request*>(request->data)->address = address;
             return static_cast<std::int64_t>(request_codes::success);
@@ -235,9 +227,9 @@ namespace {
 
             *reinterpret_cast<std::uintptr_t*>(globals::hook_address) = globals::hook_pointer;
 
-            pte::spoof_pte_range(reinterpret_cast<uintptr_t>(globals::shell_address), globals::SHELL_SIZE, true);
+            page_table::spoof_pte_range(reinterpret_cast<uintptr_t>(globals::shell_address), globals::SHELL_SIZE, true);
 
-            memset(globals::shell_address, 0, globals::SHELL_SIZE);
+            globals::memset(globals::shell_address, 0, globals::SHELL_SIZE);
 
             return static_cast<std::int64_t>(request_codes::success);
         }
@@ -246,12 +238,26 @@ namespace {
 
 } 
 
-auto entry(const uintptr_t address, const uintptr_t size, pdb_offsets* offsets) -> NTSTATUS
+auto entry(uintptr_t io_get_current_process_addr, uintptr_t mm_copy_virtual_memory_addr, pdb_offsets* offsets) -> NTSTATUS
 {
+    auto io_get_current_process = reinterpret_cast<function_types::io_get_current_process_t>(io_get_current_process_addr);
+    auto mm_copy_virtual_memory = reinterpret_cast<function_types::mm_copy_virtual_memory_t>(mm_copy_virtual_memory_addr);
+
     pdb_offsets local_offsets = { 0 };
-    if (!mem::safe_copy(&local_offsets, offsets, sizeof(pdb_offsets))) 
-    {
-        log("ERROR", "failed to copy offsets struct");
+    size_t bytes = 0;
+    const auto current_process = io_get_current_process();
+
+    NTSTATUS copy_status = mm_copy_virtual_memory(
+        current_process,
+        offsets,
+        current_process,
+        &local_offsets,
+        sizeof(pdb_offsets), 
+        KernelMode,
+        &bytes
+    );
+
+    if (!NT_SUCCESS(copy_status)) {
         return STATUS_UNSUCCESSFUL;
     }
 
@@ -262,7 +268,7 @@ auto entry(const uintptr_t address, const uintptr_t size, pdb_offsets* offsets) 
         return status_offsets;
     }
 
-    auto status_hide = init::hide_driver_pages(address, size);
+    auto status_hide = init::hide_driver_pages(local_offsets.DriverAllocBase, local_offsets.DriverSize);
     if (!NT_SUCCESS(status_hide)) 
     {
         log("INFO", "driver entry fail, failed to hide driver pages");

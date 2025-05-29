@@ -4,13 +4,13 @@
 
 namespace physical {
     inline PTE_NEW* main_page_entry;
-    inline PVOID main_virtual_address;
+    inline void* main_virtual_address;
 
     void* physical_to_virtual(const uintptr_t address)
     {
         PHYSICAL_ADDRESS physical{};
         physical.QuadPart = address;
-        return MmGetVirtualForPhysical(physical);
+        return globals::mm_get_virtual_for_physical(physical);
     }
 
     NTSTATUS init()
@@ -18,7 +18,8 @@ namespace physical {
         PHYSICAL_ADDRESS max_address{};
         max_address.QuadPart = MAXULONG64;
 
-        main_virtual_address = MmAllocateContiguousMemory(PAGE_SIZE, max_address);
+        //main_virtual_address = MmAllocateContiguousMemory(PAGE_SIZE, max_address);
+        main_virtual_address = globals::mm_allocate_independent_pages_ex(PAGE_SIZE, -1, 0, 0);
         if (!main_virtual_address)
             return STATUS_INSUFFICIENT_RESOURCES;
 
@@ -60,50 +61,50 @@ namespace physical {
         return STATUS_SUCCESS;
     }
 
-    PVOID overwrite_page(const ULONG64 physical_address)
+    PVOID overwrite_page(const uintptr_t physical_address)
     {
         // page boundary checks are done by Read/WriteProcessMemory
         // and page entries are not spread over different pages
-        const ULONG page_offset = physical_address % PAGE_SIZE;
-        const ULONG64 page_start_physical = physical_address - page_offset;
+        const unsigned long page_offset = physical_address % PAGE_SIZE;
+        const uintptr_t page_start_physical = physical_address - page_offset;
         main_page_entry->PageFrame = PAGE_TO_PFN(page_start_physical);
         __invlpg(main_virtual_address);
-        return reinterpret_cast<PVOID>(reinterpret_cast<ULONG64>(main_virtual_address) + page_offset);
+        return reinterpret_cast<PVOID>(reinterpret_cast<uintptr_t>(main_virtual_address) + page_offset);
     }
 
-    NTSTATUS read_physical_address(const ULONG64 target_address, PVOID buffer, const SIZE_T size)
+    NTSTATUS read_physical_address(const uintptr_t target_address, void* buffer, const size_t size)
     {
         const auto virtual_address = overwrite_page(target_address);
-        memcpy(buffer, virtual_address, size);
+        globals::memcpy(buffer, virtual_address, size);
         return STATUS_SUCCESS;
     }
 
-    NTSTATUS write_physical_address(const ULONG64 target_address, const PVOID buffer, const SIZE_T size)
+    NTSTATUS write_physical_address(const uintptr_t target_address, const void* buffer, const size_t size)
     {
         const auto virtual_address = overwrite_page(target_address);
-        memcpy(virtual_address, buffer, size);
+        globals::memcpy(virtual_address, buffer, size);
         return STATUS_SUCCESS;
     }
 
 #define PAGE_OFFSET_SIZE 12
-    static constexpr ULONG64 PMASK = (~0xfull << 8) & 0xfffffffffull;
+    static constexpr uintptr_t PMASK = (~0xfull << 8) & 0xFFFFFFFFFFF000;
 
-    ULONG64 translate_linear_address(ULONG64 directory_table_base, const ULONG64 virtual_address)
+    uintptr_t translate_linear_address(uintptr_t directory_table_base, const uintptr_t virtual_address)
     {
         directory_table_base &= ~0xf;
 
-        const ULONG64 page_offset = virtual_address & ~(~0ul << PAGE_OFFSET_SIZE);
-        const ULONG64 pte = ((virtual_address >> 12) & (0x1ffll));
-        const ULONG64 pt = ((virtual_address >> 21) & (0x1ffll));
-        const ULONG64 pd = ((virtual_address >> 30) & (0x1ffll));
-        const ULONG64 pdp = ((virtual_address >> 39) & (0x1ffll));
+        const uintptr_t page_offset = virtual_address & ~(~0ul << PAGE_OFFSET_SIZE);
+        const uintptr_t pte = ((virtual_address >> 12) & (0x1ffll));
+        const uintptr_t pt = ((virtual_address >> 21) & (0x1ffll));
+        const uintptr_t pd = ((virtual_address >> 30) & (0x1ffll));
+        const uintptr_t pdp = ((virtual_address >> 39) & (0x1ffll));
 
-        ULONG64 pdpe = 0;
+        uintptr_t pdpe = 0;
         read_physical_address(directory_table_base + 8 * pdp, &pdpe, sizeof(pdpe));
         if (~pdpe & 1)
             return 0;
 
-        ULONG64 pde = 0;
+        uintptr_t pde = 0;
         read_physical_address((pdpe & PMASK) + 8 * pd, &pde, sizeof(pde));
         if (~pde & 1)
             return 0;
@@ -112,7 +113,7 @@ namespace physical {
         if (pde & 0x80)
             return (pde & (~0ull << 42 >> 12)) + (virtual_address & ~(~0ull << 30));
 
-        ULONG64 pte_addr = 0;
+        uintptr_t pte_addr = 0;
         read_physical_address((pde & PMASK) + 8 * pt, &pte_addr, sizeof(pte_addr));
         if (~pte_addr & 1)
             return 0;
@@ -121,7 +122,7 @@ namespace physical {
         if (pte_addr & 0x80)
             return (pte_addr & PMASK) + (virtual_address & ~(~0ull << 21));
 
-        ULONG64 result_address = 0;
+        uintptr_t result_address = 0;
         read_physical_address((pte_addr & PMASK) + 8 * pte, &result_address, sizeof(result_address));
         result_address &= PMASK;
 
@@ -143,14 +144,18 @@ namespace physical {
         return dir_base;
     }
 
-    NTSTATUS read_process_memory(const PEPROCESS process, const ULONG64 address, PVOID buffer, const SIZE_T size)
+    NTSTATUS read_process_memory(const PEPROCESS process, const uintptr_t address, void* buffer, const size_t size)
     {
         if (!address)
             return STATUS_INVALID_PARAMETER;
 
         const auto process_dir_base = get_process_directory_base(process);
-        SIZE_T current_offset = 0;
-        SIZE_T total_size = size;
+        if (!process_dir_base) {
+            return STATUS_NOT_FOUND;
+        }
+
+        size_t current_offset = 0;
+        size_t total_size = size;
 
         while (total_size)
         {
@@ -161,7 +166,7 @@ namespace physical {
             const auto read_size = min(PAGE_SIZE - (current_physical_address & 0xFFF), total_size);
             const auto status = read_physical_address(
                 current_physical_address,
-                reinterpret_cast<PVOID>(reinterpret_cast<ULONG64>(buffer) + current_offset),
+                reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(buffer) + current_offset),
                 read_size
             );
 
@@ -175,14 +180,18 @@ namespace physical {
         return STATUS_SUCCESS;
     }
 
-    NTSTATUS write_process_memory(const PEPROCESS process, const ULONG64 address, const PVOID buffer, const SIZE_T size)
+    NTSTATUS write_process_memory(const PEPROCESS process, const uintptr_t address, const void* buffer, const size_t size)
     {
         if (!address)
             return STATUS_INVALID_PARAMETER;
 
         const auto process_dir_base = get_process_directory_base(process);
-        SIZE_T current_offset = 0;
-        SIZE_T total_size = size;
+        if (!process_dir_base) {
+            return STATUS_NOT_FOUND;
+        }
+
+        size_t current_offset = 0;
+        size_t total_size = size;
 
         while (total_size)
         {
@@ -193,7 +202,7 @@ namespace physical {
             const auto write_size = min(PAGE_SIZE - (current_physical_address & 0xFFF), total_size);
             const auto status = write_physical_address(
                 current_physical_address,
-                reinterpret_cast<PVOID>(reinterpret_cast<ULONG64>(buffer) + current_offset),
+                reinterpret_cast<PVOID>(reinterpret_cast<uintptr_t>(buffer) + current_offset),
                 write_size
             );
 
@@ -207,8 +216,8 @@ namespace physical {
         return STATUS_SUCCESS;
     }
 
-    NTSTATUS copy_memory(const PEPROCESS source_process, const PVOID source_address,
-        const PEPROCESS target_process, const PVOID target_address, const SIZE_T buffer_size)
+    NTSTATUS copy_memory(const PEPROCESS source_process, const void* source_address,
+        const PEPROCESS target_process, const void* target_address, const size_t buffer_size)
     {
         void* temp_buffer = globals::mm_allocate_independent_pages_ex(buffer_size, -1, 0, 0);
         if (!temp_buffer)
@@ -224,9 +233,9 @@ namespace physical {
         return status;
     }
 
-    PEPROCESS find_proc(const wchar_t* executable_name, PVOID* main_module_base_address)
+    PEPROCESS find_proc(const wchar_t* executable_name, void** main_module_base_address)
     {
-        const auto current_process = IoGetCurrentProcess();
+        const auto current_process = globals::io_get_current_process();
         const auto list = reinterpret_cast<PLIST_ENTRY>(
             reinterpret_cast<PCHAR>(current_process) + globals::active_process_links
             );
@@ -239,7 +248,7 @@ namespace physical {
                 reinterpret_cast<PCHAR>(current_list) - globals::active_process_links
                 );
 
-            const auto peb_address = PsGetProcessPeb(target_process);
+            const auto peb_address = globals::ps_get_process_peb(target_process);
             if (!peb_address)
             {
                 current_list = current_list->Flink;
@@ -280,9 +289,9 @@ namespace physical {
                 module_path_str.MaximumLength = min(entry_local.BaseDllName.MaximumLength, static_cast<USHORT>(256));
 
                 UNICODE_STRING module_name_str{};
-                RtlInitUnicodeString(&module_name_str, executable_name);
+                globals::rtl_init_unicode_string(&module_name_str, executable_name);
 
-                if (RtlCompareUnicodeString(&module_path_str, &module_name_str, TRUE) == 0)
+                if (globals::rtl_compare_unicode_string(&module_path_str, &module_name_str, TRUE) == 0)
                 {
                     *main_module_base_address = entry_local.DllBase;
                     return target_process;

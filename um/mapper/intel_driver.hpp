@@ -128,7 +128,7 @@ namespace intel_driver
 	bool IsRunning();
 	HANDLE Load();
 	bool Unload(HANDLE device_handle);
-
+	bool DumpMiPinDriverAddressLog(HANDLE device_handle);
 	bool MemCopy(HANDLE device_handle, uint64_t destination, uint64_t source, uint64_t size);
 	bool GetPhysicalAddress(HANDLE device_handle, uint64_t address, uint64_t* out_physical_address);
 	uint64_t MapIoSpace(HANDLE device_handle, uint64_t physical_address, uint32_t size);
@@ -452,42 +452,42 @@ HANDLE intel_driver::Load() {
 	}
 
 
-	if (intel_driver::CheckForDebugger(result)) {
-		// Crash, Ban, do whatever
-		return (HANDLE)(0x5232);
-	};
+	//if (intel_driver::CheckForDebugger(result)) {
+	//	// Crash, Ban, do whatever
+	//	return (HANDLE)(0x5232);
+	//};
 
-	//intel_driver::NullEtwpBootPhase(result); // Stops ETW based process hacker apps like ProcMonX and ProcMonXv2
+	////intel_driver::NullEtwpBootPhase(result); // Stops ETW based process hacker apps like ProcMonX and ProcMonXv2
 
-	if (intel_driver::CheckForDriverDispatchHook(result) == 2) {
-		Log(L"[-] Failed to Verify Driver Dispatch" << std::endl);
-		// Crash, Ban, do whatever
-		return (HANDLE)(0x5232);
-	}
+	//if (intel_driver::CheckForDriverDispatchHook(result) == 2) {
+	//	Log(L"[-] Failed to Verify Driver Dispatch" << std::endl);
+	//	// Crash, Ban, do whatever
+	//	return (HANDLE)(0x5232);
+	//}
 
-	if (!intel_driver::ClearPiDDBCacheTable(result)) {
-		Log(L"[-] Failed to ClearPiDDBCacheTable" << std::endl);
-		intel_driver::Unload(result);
-		return INVALID_HANDLE_VALUE;
-	}
+	//if (!intel_driver::ClearPiDDBCacheTable(result)) {
+	//	Log(L"[-] Failed to ClearPiDDBCacheTable" << std::endl);
+	//	intel_driver::Unload(result);
+	//	return INVALID_HANDLE_VALUE;
+	//}
 
-	if (!intel_driver::ClearKernelHashBucketList(result)) {
-		Log(L"[-] Failed to ClearKernelHashBucketList" << std::endl);
-		intel_driver::Unload(result);
-		return INVALID_HANDLE_VALUE;
-	}
+	//if (!intel_driver::ClearKernelHashBucketList(result)) {
+	//	Log(L"[-] Failed to ClearKernelHashBucketList" << std::endl);
+	//	intel_driver::Unload(result);
+	//	return INVALID_HANDLE_VALUE;
+	//}
 
-	if (!intel_driver::ClearMmUnloadedDrivers(result)) {
-		Log(L"[!] Failed to ClearMmUnloadedDrivers" << std::endl);
-		intel_driver::Unload(result);
-		return INVALID_HANDLE_VALUE;
-	}
+	//if (!intel_driver::ClearMmUnloadedDrivers(result)) {
+	//	Log(L"[!] Failed to ClearMmUnloadedDrivers" << std::endl);
+	//	intel_driver::Unload(result);
+	//	return INVALID_HANDLE_VALUE;
+	//}
 
-	if (!intel_driver::ClearWdFilterDriverList(result)) {
-		Log("[!] Failed to ClearWdFilterDriverList" << std::endl);
-		intel_driver::Unload(result);
-		return INVALID_HANDLE_VALUE;
-	}
+	//if (!intel_driver::ClearWdFilterDriverList(result)) {
+	//	Log("[!] Failed to ClearWdFilterDriverList" << std::endl);
+	//	intel_driver::Unload(result);
+	//	return INVALID_HANDLE_VALUE;
+	//}
 
 	return result;
 }
@@ -1196,39 +1196,64 @@ __forceinline bool intel_driver::ClearWdFilterDriverList(HANDLE device_handle) {
 	return false;
 }
 
+// helper function to check contiguous zeros across multiple reads
+bool CheckContiguousZeros(HANDLE device_handle, uintptr_t start_addr, size_t required_size) {
+	const size_t check_chunk_size = 4096;
+	std::vector<UCHAR> check_buffer(check_chunk_size);
+
+	for (size_t offset = 0; offset < required_size; offset += check_chunk_size) {
+		size_t check_size = min(check_chunk_size, required_size - offset);
+
+		if (!intel_driver::ReadMemory(device_handle, start_addr + offset, check_buffer.data(), check_size)) {
+			return false;
+		}
+
+		for (size_t i = 0; i < check_size; i++) {
+			if (check_buffer[i] != 0x00) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 PVOID intel_driver::FindUnusedSpace(HANDLE device_handle, uintptr_t base, unsigned long section_size, size_t required_size, size_t chunk_size) {
+	Log(L"[+] Searching for " << required_size << L" bytes in section of size " << section_size << std::endl);
 
 	if (required_size > section_size) {
 		Log(L"[-] Required size is larger than the section size" << std::endl);
 		return nullptr;
 	}
 
-	std::vector<UCHAR> buffer(chunk_size);
+	// use smaller chunks to avoid memory issues
+	const size_t safe_chunk_size = min(chunk_size, 4096ULL);
+	std::vector<UCHAR> buffer(safe_chunk_size);
 
 	unsigned long max_offset = section_size - required_size;
+	Log(L"[+] Max search offset: " << max_offset << std::endl);
 
-	for (unsigned long i = 0; i <= max_offset; i += chunk_size) {
-		size_t read_size = (i + chunk_size > section_size) ? (section_size - i) : chunk_size;
+	for (unsigned long i = 0; i <= max_offset; i += safe_chunk_size) {
+		size_t read_size = min(safe_chunk_size, section_size - i);
 
 		if (!intel_driver::ReadMemory(device_handle, base + i, buffer.data(), read_size)) {
 			Log(L"[-] Failed to read memory at: " << reinterpret_cast<void*>(base + i) << std::endl);
 			return nullptr;
 		}
 
-		for (size_t j = 0; j <= read_size - required_size; j++) {
-			bool found_space = true;
-			for (size_t k = 0; k < required_size; k++) {
-				if (buffer[j + k] != 0x00) {
-					found_space = false;
-					break;
+		// only check positions where we can fit the required size within remaining section
+		for (size_t j = 0; j < read_size && (i + j + required_size <= section_size); j++) {
+			if (buffer[j] == 0x00) {
+				// found a zero byte, now check if we have enough contiguous zeros
+				bool found_space = CheckContiguousZeros(device_handle, base + i + j, required_size);
+				if (found_space) {
+					Log(L"[+] Found space at offset " << (i + j) << std::endl);
+					return reinterpret_cast<PVOID>(base + i + j);
 				}
-			}
-			if (found_space) {
-				return reinterpret_cast<PVOID>(base + i + j);
 			}
 		}
 	}
 
+	Log(L"[-] No suitable space found in entire section" << std::endl);
 	return nullptr;
 }
 
@@ -1300,6 +1325,186 @@ __forceinline bool intel_driver::MemCopy(HANDLE device_handle, uint64_t destinat
 	return true;
 }
 
+bool intel_driver::DumpMiPinDriverAddressLog(HANDLE device_handle) {
+	Log(L"[+] Searching for MiPinDriverAddressLog pattern..." << std::endl);
+
+	// find the pattern
+	uint64_t pattern_address = intel_driver::FindPatternInSectionAtKernel(
+		device_handle, (char*)(".text"), intel_driver::ntoskrnlAddr,
+		(BYTE*)("\x48\x8D\x15\x00\x00\x00\x00\x8B\xCF\x48\x89\x04\xCA\xE9"),
+		(char*)("xxx????xxxxxxx")
+	);
+
+	if (!pattern_address) {
+		Log(L"[-] Pattern not found in .text, trying PAGE section..." << std::endl);
+		pattern_address = intel_driver::FindPatternInSectionAtKernel(
+			device_handle, (char*)("PAGE"), intel_driver::ntoskrnlAddr,
+			(BYTE*)("\x48\x8D\x15\x00\x00\x00\x00\x8B\xCF\x48\x89\x04\xCA\xE9"),
+			(char*)("xxx????xxxxxxx")
+		);
+	}
+
+	if (!pattern_address) {
+		Log(L"[-] Pattern not found in any section!" << std::endl);
+		return false;
+	}
+
+	Log(L"[+] Found pattern at: 0x" << std::hex << pattern_address << std::endl);
+
+	// resolve address
+	uint64_t MiPinDriverAddressLog_ptr = (uint64_t)intel_driver::ResolveRelativeAddress(
+		device_handle, (PVOID)pattern_address, 3, 7
+	);
+
+	if (!MiPinDriverAddressLog_ptr) {
+		Log(L"[-] Failed to resolve relative address!" << std::endl);
+		return false;
+	}
+
+	Log(L"[+] MiPinDriverAddressLog at: 0x" << std::hex << MiPinDriverAddressLog_ptr << std::endl);
+
+	// count entries first
+	uint32_t valid_count = 0;
+	for (size_t i = 0; i < 0x800; i++) {
+		uint64_t entry_value = 0;
+		uint64_t entry_address = MiPinDriverAddressLog_ptr + (i * sizeof(uint64_t));
+
+		if (intel_driver::ReadMemory(device_handle, entry_address, &entry_value, sizeof(entry_value))) {
+			if (entry_value != 0) {
+					valid_count++;
+			}
+		}
+	}
+
+	Log(L"[+] Found " << std::dec << valid_count << L" valid entries" << std::endl);
+
+	if (valid_count == 0) {
+		Log(L"[-] No valid virtual addresses found in log" << std::endl);
+		return false;
+	}
+
+	// print all virtual addresses
+	Log(L"[+] Virtual addresses:" << std::endl);
+	for (size_t i = 0; i < 0x800; i++) {
+		uint64_t entry_value = 0;
+		uint64_t entry_address = MiPinDriverAddressLog_ptr + (i * sizeof(uint64_t));
+
+		if (intel_driver::ReadMemory(device_handle, entry_address, &entry_value, sizeof(entry_value))) {
+			if (entry_value != 0) {
+				Log(L"0x" << std::hex << entry_value << std::endl);
+			}
+		}
+	}
+
+	return true;
+}
+
+//bool intel_driver::DumpMiPinDriverAddressLog(HANDLE device_handle) {
+//	Log(L"[+] Searching for MiPinDriverAddressLog..." << std::endl);
+//
+//	// Find the pattern in ntoskrnl
+//	uint64_t pattern_address = intel_driver::FindPatternInSectionAtKernel(
+//		device_handle,
+//		(char*)(".text"),
+//		intel_driver::ntoskrnlAddr,
+//		(BYTE*)("\x48\x8D\x15\x00\x00\x00\x00\x8B\xCF\x48\x89\x04\xCA\xE9"),
+//		(char*)("xxx????xxxxxxx")
+//	);
+//
+//	if (!pattern_address) {
+//		Log(L"[-] Failed to find MiPinDriverAddressLog pattern in .text section, trying PAGE" << std::endl);
+//		pattern_address = intel_driver::FindPatternInSectionAtKernel(
+//			device_handle,
+//			(char*)("PAGE"),
+//			intel_driver::ntoskrnlAddr,
+//			(BYTE*)("\x48\x8D\x15\x00\x00\x00\x00\x8B\xCF\x48\x89\x04\xCA\xE9"),
+//			(char*)("xxx????xxxxxxx")
+//		);
+//	}
+//
+//	if (!pattern_address) {
+//		Log(L"[-] Failed to find MiPinDriverAddressLog pattern" << std::endl);
+//		return false;
+//	}
+//
+//	Log(L"[+] Found MiPinDriverAddressLog pattern at: 0x" << std::hex << pattern_address << std::endl);
+//
+//	// Resolve the relative address (LEA instruction at offset 0)
+//	uint64_t MiPinDriverAddressLog_ptr = (uint64_t)intel_driver::ResolveRelativeAddress(
+//		device_handle,
+//		(PVOID)pattern_address,
+//		3,  // Offset to the relative address in LEA instruction
+//		7   // Length of the LEA instruction
+//	);
+//
+//	if (!MiPinDriverAddressLog_ptr) {
+//		Log(L"[-] Failed to resolve MiPinDriverAddressLog relative address" << std::endl);
+//		return false;
+//	}
+//
+//	Log(L"[+] MiPinDriverAddressLog address: 0x" << std::hex << MiPinDriverAddressLog_ptr << std::endl);
+//
+//	// MiPinDriverAddressLog is typically an array of 0x800 (2048) entries
+//	const size_t MAX_ENTRIES = 0x800;
+//	const size_t ENTRY_SIZE = sizeof(uint64_t); // Each entry is 8 bytes
+//
+//	Log(L"[+] Reading MiPinDriverAddressLog entries..." << std::endl);
+//	Log(L"[+] ===============================================" << std::endl);
+//
+//	uint32_t valid_entries_found = 0;
+//
+//	for (size_t i = 0; i < MAX_ENTRIES; i++) {
+//		uint64_t entry_address = MiPinDriverAddressLog_ptr + (i * ENTRY_SIZE);
+//		uint64_t entry_value = 0;
+//
+//		if (!intel_driver::ReadMemory(device_handle, entry_address, &entry_value, sizeof(entry_value))) {
+//			continue;
+//		}
+//
+//		// Skip empty entries
+//		if (entry_value == 0) {
+//			continue;
+//		}
+//
+//		valid_entries_found++;
+//
+//		// Parse the entry based on the MiQueuePinDriverAddressLog structure
+//		// From the analysis, the entry contains:
+//		// - Virtual address (masked with 0xFFFFF000)
+//		// - Various flags in lower bits
+//		uint64_t virtual_address = entry_value & 0xFFFFF000ULL;
+//		uint32_t flags = entry_value & 0xFFF;
+//
+//		// Extract some specific flags based on the MiQueuePinDriverAddressLog function
+//		bool is_valid = (flags & 0x1) != 0;
+//		bool has_pte = (flags & 0x8) != 0;
+//		bool is_present = (flags & 0x10) != 0;
+//		bool has_ref_count = (flags & 0x20) != 0;
+//
+//		Log(L"[" << std::dec << std::setw(4) << i << L"] "
+//			<< L"Entry: 0x" << std::hex << std::setw(16) << entry_value
+//			<< L" | VA: 0x" << std::hex << std::setw(12) << virtual_address
+//			<< L" | Flags: 0x" << std::hex << std::setw(3) << flags);
+//
+//		if (is_valid) Log(L" [VALID]");
+//		if (has_pte) Log(L" [PTE]");
+//		if (is_present) Log(L" [PRESENT]");
+//		if (has_ref_count) Log(L" [REFCOUNT]");
+//
+//		Log(std::endl);
+//
+//		// Optionally, try to get physical address for this virtual address
+//		if (virtual_address >= 0xFFFF800000000000ULL) { // Valid kernel address
+//			// You could add MmGetPhysicalAddress call here if needed
+//			// uint64_t physical_addr = CallMmGetPhysicalAddress(device_handle, virtual_address);
+//		}
+//	}
+//
+//	Log(L"[+] ===============================================" << std::endl);
+//	Log(L"[+] Total valid entries found: " << std::dec << valid_entries_found << L" / " << MAX_ENTRIES << std::endl);
+//
+//	return true;
+//}
 __forceinline bool intel_driver::GetPhysicalAddress(HANDLE device_handle, uint64_t address, uint64_t* out_physical_address) {
 	if (!address)
 		return false;
@@ -1504,11 +1709,6 @@ __forceinline uint64_t intel_driver::MiGetPteAddress(HANDLE device_handle, uint6
 			return 0;
 		}
 
-		//kernel_MmAllocateIndependentPagesEx = (uint64_t)ResolveRelativeAddress(device_handle, (PVOID)kernel_MmAllocateIndependentPagesEx, 1, 5);
-		//if (!kernel_MmAllocateIndependentPagesEx) {
-		//	Log(L"[!] Failed to find MmAllocateIndependentPagesEx" << std::endl);
-		//	return 0;
-		//}
 	}
 
 	if (!intel_driver::CallKernelFunction(device_handle, &pte, kernel_MiGetPteAddress, address))
@@ -1517,7 +1717,6 @@ __forceinline uint64_t intel_driver::MiGetPteAddress(HANDLE device_handle, uint6
 	return pte;
 }
 
-// 
 __forceinline uint64_t intel_driver::MiGetPdeAddress(HANDLE device_handle, uint64_t address)
 {
 	uint64_t pde{};

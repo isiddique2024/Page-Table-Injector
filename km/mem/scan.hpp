@@ -36,12 +36,12 @@ private:
             }
         }
 
-        info.bytes = (UCHAR*)ExAllocatePool2(POOL_FLAG_NON_PAGED, count, 'nrtp');
-        info.mask = (BOOLEAN*)ExAllocatePool2(POOL_FLAG_NON_PAGED, count, 'ksam');
+        info.bytes = (UCHAR*)globals::ex_allocate_pool2(POOL_FLAG_NON_PAGED, count, 'nrtp');
+        info.mask = (BOOLEAN*)globals::ex_allocate_pool2(POOL_FLAG_NON_PAGED, count, 'ksam');
 
         if (!info.bytes || !info.mask) {
-            if (info.bytes) ExFreePoolWithTag(info.bytes, 0);
-            if (info.mask) ExFreePoolWithTag(info.mask, 0);
+            if (info.bytes) globals::ex_free_pool_with_tag(info.bytes, 0);
+            if (info.mask) globals::ex_free_pool_with_tag(info.mask, 0);
             return info;
         }
 
@@ -90,15 +90,15 @@ private:
             }
 
             if (found) {
-                ExFreePoolWithTag(info.bytes, 0);
+                globals::ex_free_pool_with_tag(info.bytes, 0);
                 
-                ExFreePoolWithTag(info.mask, 0);
+                globals::ex_free_pool_with_tag(info.mask, 0);
                 return module_base + i;
             }
         }
 
-        ExFreePoolWithTag(info.bytes, 0);
-        ExFreePoolWithTag(info.mask, 0);
+        globals::ex_free_pool_with_tag(info.bytes, 0);
+        globals::ex_free_pool_with_tag(info.mask, 0);
         return 0;
     }
 
@@ -210,43 +210,41 @@ public:
     static auto find_pattern_usermode(uint32_t pid, const wchar_t* mod_name, const char* pattern, uintptr_t& r_addr) -> NTSTATUS
     {
         PEPROCESS target_proc;
-        const auto status = PsLookupProcessByProcessId(reinterpret_cast<HANDLE>(pid), &target_proc);
+        const auto status = globals::ps_lookup_process_by_process_id(reinterpret_cast<HANDLE>(pid), &target_proc);
         if (!NT_SUCCESS(status))
         {
             log("ERROR", "failed to find process");
             return status;
         }
 
-        physical::init();
-
         uintptr_t base = 0;
         uintptr_t module_size = 0;
 
         // get PEB address
-        PPEB peb_address = PsGetProcessPeb(target_proc);
+        PPEB peb_address = globals::ps_get_process_peb(target_proc);
         if (!peb_address) {
             log("ERROR", "failed to get process PEB");
-            ObfDereferenceObject(target_proc);
+            globals::obf_dereference_object(target_proc);
             return STATUS_NOT_FOUND;
         }
 
         // read PEB using physical memory read
-        PEB peb{};
-        physical::read_process_memory(target_proc, reinterpret_cast<ULONG64>(peb_address), &peb, sizeof(PEB));
+        PEB peb;
+        physical::read_process_memory(target_proc, reinterpret_cast<uintptr_t>(peb_address), &peb, sizeof(PEB));
 
         if (!peb.Ldr || !peb.Ldr->Initialized) {
             log("ERROR", "PEB loader data not initialized");
-            ObfDereferenceObject(target_proc);
+            globals::obf_dereference_object(target_proc);
             return STATUS_NOT_FOUND;
         }
 
         // create Unicode string for comparison
         UNICODE_STRING module_name_unicode;
-        RtlInitUnicodeString(&module_name_unicode, mod_name);
+        globals::rtl_init_unicode_string(&module_name_unicode, mod_name);
 
         // get LDR_DATA_TABLE_ENTRY for InLoadOrderModuleList
         PEB_LDR_DATA ldr_data{};
-        physical::read_process_memory(target_proc, reinterpret_cast<ULONG64>(peb.Ldr), &ldr_data, sizeof(PEB_LDR_DATA));
+        physical::read_process_memory(target_proc, reinterpret_cast<uintptr_t>(peb.Ldr), &ldr_data, sizeof(PEB_LDR_DATA));
 
         // get the first entry address
         PLIST_ENTRY current_entry = ldr_data.InLoadOrderModuleList.Flink;
@@ -256,7 +254,7 @@ public:
             // read the current LDR_DATA_TABLE_ENTRY
             LDR_DATA_TABLE_ENTRY entry{};
             physical::read_process_memory(target_proc,
-                reinterpret_cast<ULONG64>(CONTAINING_RECORD(current_entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks)),
+                reinterpret_cast<uintptr_t>(CONTAINING_RECORD(current_entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks)),
                 &entry,
                 sizeof(LDR_DATA_TABLE_ENTRY));
 
@@ -264,7 +262,7 @@ public:
             WCHAR dll_name[256]{};
             if (entry.BaseDllName.Length > 0 && entry.BaseDllName.Buffer) {
                 physical::read_process_memory(target_proc,
-                    reinterpret_cast<ULONG64>(entry.BaseDllName.Buffer),
+                    reinterpret_cast<uintptr_t>(entry.BaseDllName.Buffer),
                     dll_name,
                     min(entry.BaseDllName.Length, static_cast<USHORT>(sizeof(dll_name) - sizeof(WCHAR))));
 
@@ -275,7 +273,7 @@ public:
                 dll_name_unicode.Buffer = dll_name;
 
                 // compare and check if this is the module we're looking for
-                if (RtlCompareUnicodeString(&dll_name_unicode, &module_name_unicode, TRUE) == 0) {
+                if (globals::rtl_compare_unicode_string(&dll_name_unicode, &module_name_unicode, TRUE) == 0) {
                     base = reinterpret_cast<uintptr_t>(entry.DllBase);
                     module_size = entry.SizeOfImage;
                     break;
@@ -283,8 +281,8 @@ public:
             }
 
             // read the next entry
-            LIST_ENTRY next_entry{};
-            physical::read_process_memory(target_proc, reinterpret_cast<ULONG64>(current_entry), &next_entry, sizeof(LIST_ENTRY));
+            LIST_ENTRY next_entry;
+            physical::read_process_memory(target_proc, reinterpret_cast<uintptr_t>(current_entry), &next_entry, sizeof(LIST_ENTRY));
             current_entry = next_entry.Flink;
 
         } while (current_entry != first_entry);
@@ -292,7 +290,7 @@ public:
         if (!base || !module_size)
         {
             log("ERROR", "failed to find base or module size");
-            ObfDereferenceObject(target_proc);
+            globals::obf_dereference_object(target_proc);
             return STATUS_NOT_FOUND;
         }
 
@@ -303,7 +301,7 @@ public:
         void* temp_buffer = globals::mm_allocate_independent_pages_ex(PAGE_SIZE, -1, 0, 0);
         if (!temp_buffer) {
             log("ERROR", "failed to allocate temporary buffer");
-            ObfDereferenceObject(target_proc);
+            globals::obf_dereference_object(target_proc);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
 
@@ -312,7 +310,7 @@ public:
         {
 
             // clear the buffer
-            RtlZeroMemory(temp_buffer, PAGE_SIZE);
+            globals::memset(temp_buffer, 0, PAGE_SIZE);
 
             // try to read the page contents using physical memory
             NTSTATUS read_status = physical::read_process_memory(
@@ -345,7 +343,7 @@ public:
             // apply pattern search to the buffer we read rather than directly to memory
             const auto pattern_offset = ida_findpattern_buffer(
                 temp_buffer,
-                scan_size - strlen(pattern),
+                scan_size - globals::strlen(pattern),
                 pattern
             );
 
@@ -357,7 +355,7 @@ public:
 
                 globals::mm_free_independent_pages(reinterpret_cast<uintptr_t>(temp_buffer), PAGE_SIZE);
 
-                ObfDereferenceObject(target_proc);
+                globals::obf_dereference_object(target_proc);
                 return STATUS_SUCCESS;
             }
         }
@@ -367,7 +365,7 @@ public:
 
         globals::mm_free_independent_pages(reinterpret_cast<uintptr_t>(temp_buffer), PAGE_SIZE);
 
-        ObfDereferenceObject(target_proc);
+        globals::obf_dereference_object(target_proc);
         return STATUS_NOT_FOUND;
     }
 };

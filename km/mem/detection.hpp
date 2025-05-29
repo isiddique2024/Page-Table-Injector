@@ -7,6 +7,7 @@ namespace detections {
     #define STATUS_PFN_EXISTS_NOT_SET 2
     #define STATUS_COPY_FAILED  3
     #define STATUS_SUPERVISOR_ERROR 4
+    #define STATUS_MISMATCHING_EPROCESS 4
 
     // struct to hold page table entry information
     typedef struct _page_table_entry_info {
@@ -15,6 +16,7 @@ namespace detections {
         uint8_t parity_error_flag;  // 1 if parity error was detected in the PFN entry
         uint8_t pfn_exists_flag;  // 1 if PfnExists is not set in the PFN entry
         uint8_t supervisor_flag; // 1 if supervisor bit is set
+        uint8_t no_associated_eprocess_flag; // 1 if a mismatching eprocess is found within MMPFN.u4.PteFrame
     } page_table_entry_info, * ppage_table_entry_info;
 
     // global array to store results
@@ -26,8 +28,58 @@ namespace detections {
     NTSTATUS walk_pd(uintptr_t pd_base, uint32_t pml4_idx, uint32_t pdpt_idx);
     NTSTATUS walk_pt(uintptr_t pt_base, uint32_t pml4_idx, uint32_t pdpt_idx, uint32_t pd_idx);
 
-    // helper function to check if physical memory can be read and if it has parity error
-    uint32_t check_physical_memory(uintptr_t physical_address, uint8_t* parity_error_flag, uint8_t* pfn_exists_flag) {
+    uint32_t check_pte_frame(uintptr_t physical_address, uint8_t* no_associated_eprocess_flag) {
+
+        // get pfn from physical address
+        uintptr_t page_frame_number = physical_address >> PAGE_SHIFT;
+
+        // get PFN entry address
+        uintptr_t pfn_entry_addr = *reinterpret_cast<uintptr_t*>(globals::mm_pfn_db) + 0x30 * page_frame_number;
+
+        // get the process from the PFN entry
+        PEPROCESS process = globals::mi_get_page_table_pfn_buddy_raw(reinterpret_cast<void*>(pfn_entry_addr));
+        char* process_name = process ? globals::ps_get_process_image_file_name(process) : nullptr;
+
+        // if there's no associated process for the PML4E PFN, then flag 
+        if (!process) {
+            *no_associated_eprocess_flag = 1;
+            log("INFO", "could not determine process owning PFN");
+            return STATUS_MISMATCHING_EPROCESS;
+        }
+
+        // if the target eprocess and the one obtained above do not match, then flag
+        if (process != globals::proc) {
+            *no_associated_eprocess_flag = 1;
+            log("INFO", "mismatch eprocess found in PFN: %s", process_name ? process_name : "<unk>");
+            return STATUS_MISMATCHING_EPROCESS;
+        }
+        else {
+            log("INFO", "process owning PFN: %s", process_name ? process_name : "<unk>");
+        }
+
+        return STATUS_OK;
+    }
+    uint32_t check_mmcopymemory(uintptr_t physical_address, uint8_t* parity_error_flag, uint8_t* pfn_exists_flag) {
+
+        // get pfn from physical address
+        uintptr_t page_frame_number = physical_address >> PAGE_SHIFT;
+
+        // get PFN entry address
+        uintptr_t pfn_entry_addr = *reinterpret_cast<uintptr_t*>(globals::mm_pfn_db) +
+            0x30 * page_frame_number;
+
+        // get pointer to PFN entry flag fields
+        auto* e3_field = reinterpret_cast<_MMPFNENTRY3*>(pfn_entry_addr + 0x23);
+
+        // check ParityError flag
+        if (e3_field->ParityError) {
+            log("INFO", "ParityError set for PFN: 0x%llx", page_frame_number);
+
+            *parity_error_flag = 1;
+
+            return STATUS_PARITY_ERROR_SET;
+        }
+
         // check if we can read the physical memory using MmCopyMemory
         uintptr_t test_value = 0;
         size_t bytes_read = 0;
@@ -35,7 +87,7 @@ namespace detections {
         source.PhysicalAddress.QuadPart = physical_address;
 
         // attempt to copy memory from the physical address
-        NTSTATUS copy_status = MmCopyMemory(
+        NTSTATUS copy_status = globals::mm_copy_memory(
             &test_value,
             source,
             sizeof(test_value),
@@ -45,17 +97,19 @@ namespace detections {
 
         if (!NT_SUCCESS(copy_status)) {
             log("INFO", "MmCopyMemory failed for PA: 0x%llx with status: 0x%X", physical_address, copy_status);
-
             if (copy_status == STATUS_INVALID_ADDRESS) {
                 *pfn_exists_flag = 1;
+
                 return STATUS_PFN_EXISTS_NOT_SET;
             }
             else if (copy_status == STATUS_HARDWARE_MEMORY_ERROR) {
                 *parity_error_flag = 1;
+
                 return STATUS_PARITY_ERROR_SET;
             }
             else {
                 // should probably add a flag if it returns some other NTSTATUS error
+                *pfn_exists_flag = 1;
                 return STATUS_COPY_FAILED;
             }
         }
@@ -64,7 +118,7 @@ namespace detections {
     }
 
     // helper function to add a result entry for PTE level only
-    BOOLEAN add_entry(uintptr_t va, uintptr_t pa, uint8_t parity_error_flag, uint8_t pfn_exists_flag, uint8_t supervisor_flag) {
+    BOOLEAN add_entry(uintptr_t va, uintptr_t pa, uint8_t parity_error_flag, uint8_t pfn_exists_flag, uint8_t supervisor_flag, uint8_t no_associated_eprocess_flag) {
         // check if we have space
         if (g_result_count >= MAX_RESULTS) {
             log("ERROR", "result buffer full, cannot add more entries");
@@ -76,6 +130,7 @@ namespace detections {
         g_results[g_result_count].parity_error_flag = parity_error_flag;
         g_results[g_result_count].pfn_exists_flag = pfn_exists_flag;
         g_results[g_result_count].supervisor_flag = supervisor_flag;
+        g_results[g_result_count].no_associated_eprocess_flag = no_associated_eprocess_flag;
         g_result_count++;
 
         return TRUE;
@@ -97,6 +152,17 @@ namespace detections {
         for (uint32_t pml4_idx = 0; pml4_idx < 512; pml4_idx++) {
             PML4E_64 pml4e = { 0 };
 
+            // calculate the virtual address for this PT entry
+            uintptr_t va = 0;
+            if (pml4_idx >= 256) {
+                // kernel space
+                va = 0xFFFF000000000000ULL | page_table::get_pml4e(pml4_idx);
+            }
+            else {
+                // user space
+                va = page_table::get_pml4e(pml4_idx);
+            }
+
             // try to read the PML4 entry
             if (!NT_SUCCESS(physical::read_physical_address(dir_base + pml4_idx * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64)))) {
                 continue;
@@ -111,6 +177,19 @@ namespace detections {
 
             pml4_present_count++;
 
+            // check if pte frame contains eprocess anomalies 
+            uintptr_t pml4_phys_addr = dir_base + pml4_idx * sizeof(PML4E_64);
+
+            uint8_t no_associated_eprocess_flag = 0;
+            uint32_t status_check_pte_frame = check_pte_frame(pml4_phys_addr, &no_associated_eprocess_flag);
+
+            if (status_check_pte_frame != STATUS_OK) {
+                if (!add_entry(va, pml4_phys_addr, 0, 0, 0, no_associated_eprocess_flag)) {
+                    log("ERROR", "result buffer full at PML4=%u", pml4_idx);
+                    return STATUS_BUFFER_TOO_SMALL;
+                }
+            }
+
             // get physical address from PFN
             uintptr_t pdpt_phys_addr = PFN_TO_PAGE(pml4e.PageFrameNumber);
 
@@ -122,7 +201,7 @@ namespace detections {
             }
         }
 
-        log("DEBUG", "PML4 level scan: Read %u entries, %u were present", pml4_read_count, pml4_present_count);
+        log("DEBUG", "PML4 level scan: read %u entries, %u were present", pml4_read_count, pml4_present_count);
         log("INFO", "completed full page table walk, found %u PTE entries", g_result_count);
         return STATUS_SUCCESS;
     }
@@ -166,7 +245,7 @@ namespace detections {
         }
 
         if (pdpt_read_count > 0) {
-            log("DEBUG", "PDPT level scan for PML4 idx %u: Read %u entries, %u were present",
+            log("DEBUG", "PDPT level scan for PML4 idx %u: read %u entries, %u were present",
                 pml4_idx, pdpt_read_count, pdpt_present_count);
         }
 
@@ -233,15 +312,15 @@ namespace detections {
             uintptr_t va = 0;
             if (pml4_idx >= 256) {
                 // kernel space
-                va = 0xFFFF000000000000ULL | ((uintptr_t)pml4_idx << 39) |
-                    ((uintptr_t)pdpt_idx << 30) | ((uintptr_t)pd_idx << 21) |
-                    ((uintptr_t)pt_idx << 12);
+                va = 0xFFFF000000000000ULL | page_table::get_pml4e(pml4_idx) |
+                    page_table::get_pdpt(pdpt_idx) | page_table::get_pd(pd_idx) |
+                    page_table::get_pt(pt_idx);
             }
             else {
                 // user space
-                va = ((uintptr_t)pml4_idx << 39) |
-                    ((uintptr_t)pdpt_idx << 30) | ((uintptr_t)pd_idx << 21) |
-                    ((uintptr_t)pt_idx << 12);
+                va = page_table::get_pml4e(pml4_idx) |
+                    page_table::get_pdpt(pdpt_idx) | page_table::get_pd(pd_idx) |
+                    page_table::get_pt(pt_idx);
             }
 
             // try to read the PT entry
@@ -284,16 +363,17 @@ namespace detections {
             // check if physical memory can be read and if it has parity error
             uint8_t parity_error_flag = 0;
             uint8_t pfn_exists_flag = 0;
-            uint32_t status = check_physical_memory(phys_addr, &parity_error_flag, &pfn_exists_flag);
+            uint8_t no_associated_eprocess_flag = 0;
+            uint32_t status_mmcopymemory = check_mmcopymemory(phys_addr, &parity_error_flag, &pfn_exists_flag);
 
-            // only record entries that have actual issues (parity error set, copy failed, or kernel supervisor bit)
-            if (status != STATUS_OK || parity_error_flag || pfn_exists_flag || supervisor_flag) {
-                if (!add_entry(va, phys_addr, parity_error_flag, pfn_exists_flag, supervisor_flag)) {
+            if (status_mmcopymemory != STATUS_OK) {
+                if (!add_entry(va, phys_addr, parity_error_flag, pfn_exists_flag, supervisor_flag, no_associated_eprocess_flag)) {
                     log("ERROR", "result buffer full at PML4=%u, PDPT=%u, PD=%u, PT=%u",
                         pml4_idx, pdpt_idx, pd_idx, pt_idx);
                     return STATUS_BUFFER_TOO_SMALL;
                 }
             }
+
         }
 
         if (pt_read_count > 0 && pt_supervisor_count > 0) {
@@ -309,6 +389,7 @@ namespace detections {
         uint32_t pfn_parity_flag_entries = 0;
         uint32_t pfn_exists_flag_entries = 0;
         uint32_t supervisor_bit_entries = 0;
+        uint32_t no_associated_eprocess_flag_entries = 0;
         uint32_t kernel_entries = 0;
         uint32_t user_entries = 0;
 
@@ -336,6 +417,9 @@ namespace detections {
             if (g_results[i].supervisor_flag) {
                 supervisor_bit_entries++;
             }
+            if (g_results[i].no_associated_eprocess_flag) {
+                no_associated_eprocess_flag_entries++;
+            }
         }
 
         log("INFO", "=== page table walk report ===");
@@ -345,6 +429,7 @@ namespace detections {
         log("INFO", "entries with PFN ParityError flag set: %u", pfn_parity_flag_entries);
         log("INFO", "entries with PFN PfnExists flag not set: %u", pfn_exists_flag_entries);
         log("INFO", "kernel entries with Supervisor bit incorrectly set: %u", supervisor_bit_entries);
+        log("INFO", "entries with mismatching or null EPROCESS in MMPFN.u4.PteFrame: %u", no_associated_eprocess_flag_entries);
 
         // log first few entries with PFN parity error flags for investigation
         if (pfn_parity_flag_entries > 0) {
@@ -372,29 +457,42 @@ namespace detections {
             }
         }
 
+        // log first few entries with PFN exists flags not set for investigation
+        if (no_associated_eprocess_flag_entries > 0) {
+            log("INFO", "mismatching EPROCESS examples:");
+            uint32_t count = 0;
+            for (uint32_t j = 0; j < g_result_count; j++) {
+                if (g_results[j].no_associated_eprocess_flag) {
+                    log("INFO", "  VA=0x%llx, PA=0x%llx",
+                        g_results[j].virtual_address, g_results[j].physical_address);
+                    if (++count >= 100) break; // limit to 100 examples
+                }
+            }
+        }
+
     }
 
     // main function to execute the full page table walk
     NTSTATUS inspect_process_page_tables(uint32_t process_id) {
         PEPROCESS process;
-        auto status = PsLookupProcessByProcessId((HANDLE)process_id, &process);
+        auto status = globals::ps_lookup_process_by_process_id((HANDLE)process_id, &process);
 
         if (!NT_SUCCESS(status)) {
             log("ERROR", "failed to lookup process with ID %u, status: 0x%08X", process_id, status);
             return status;
         }
 
-        physical::init();
+        globals::proc = process;
 
+        // get target process directory base
         const auto dir_base = physical::get_process_directory_base(process);
-        log("INFO", "process %u has directory base 0x%llx", process_id, dir_base);
-
-        // validate CR3
         if (!dir_base) {
             log("ERROR", "invalid directory base: 0x%llx", dir_base);
-            ObfDereferenceObject(process);
+            globals::obf_dereference_object(process);
             return STATUS_INVALID_PARAMETER;
         }
+
+        log("INFO", "process %u has directory base 0x%llx", process_id, dir_base);
 
         // perform the full page table walk
         status = walk_all_page_tables(dir_base);
@@ -407,7 +505,7 @@ namespace detections {
             log("ERROR", "failed to walk page tables, status: 0x%08X", status);
         }
 
-        ObfDereferenceObject(process);
+        globals::obf_dereference_object(process);
         return status;
     }
 }

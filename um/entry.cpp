@@ -18,11 +18,13 @@ int main(int argc, char* argv[]) {
     // init CLI11 app
     CLI::App app{ "Physical Memory Manual Mapper" };
 
-    // define variables to store arguments
+    // define variables and defaults to store arguments
     std::string window_name;
-    std::string dll_path = "memory"; // default to in-memory DLL
-    std::uint32_t mem_type = driver->memory_type::NORMAL_PAGE;
-    std::uint32_t alloc_mode = driver->alloc_mode::ALLOC_BETWEEN_LEGIT_MODULES;
+    std::string dll_path = "memory";
+    std::uint32_t driver_alloc_mode = nt::ALLOC_IN_CURRENT_PROCESS_CONTEXT;
+    std::uint32_t driver_mem_type = nt::NORMAL_PAGE;
+    std::uint32_t dll_mem_type = driver->memory_type::NORMAL_PAGE;
+    std::uint32_t dll_alloc_mode = driver->alloc_mode::ALLOC_BETWEEN_LEGIT_MODULES;
     std::string hook_module = "user32.dll";
     std::string hook_function = "GetMessageW";
     std::string target_module = "";
@@ -33,11 +35,17 @@ int main(int argc, char* argv[]) {
 
     app.add_option("dll_path", dll_path, "Path to the DLL file to inject, or \"memory\" to use the in-memory message box DLL");
 
-    app.add_option("memory_type", mem_type, "Memory type: 0 for NORMAL_PAGE, 1 for LARGE_PAGE, 2 for HUGE_PAGE")
+    app.add_option("driver_alloc_mode", driver_alloc_mode, "Driver allocation mode: 0 for ALLOC_IN_SYSTEM_CONTEXT, 1 for ALLOC_IN_NTOSKRNL_DATA_SECTION, 2 for ALLOC_IN_CURRENT_PROCESS_CONTEXT")
         ->check(CLI::Range(0, 2));
 
-    app.add_option("alloc_mode", alloc_mode, "Allocation mode: 0 for ALLOC_INSIDE_MAIN_MODULE, 1 for ALLOC_BETWEEN_LEGIT_MODULES, 2 for ALLOC_AT_LOW_ADDRESS, 3 for ALLOC_AT_HIGH_ADDRESS")
+    app.add_option("driver_memory_type", driver_mem_type, "Driver Memory type: 0 for NORMAL_PAGE, 1 for LARGE_PAGE, 2 for HUGE_PAGE")
+        ->check(CLI::Range(0, 2));
+
+    app.add_option("dll_alloc_mode", dll_alloc_mode, "DLL Allocation mode: 0 for ALLOC_INSIDE_MAIN_MODULE, 1 for ALLOC_BETWEEN_LEGIT_MODULES, 2 for ALLOC_AT_LOW_ADDRESS, 3 for ALLOC_AT_HIGH_ADDRESS")
         ->check(CLI::Range(0, 3));
+
+    app.add_option("dll_memory_type", dll_mem_type, "DLL Memory type: 0 for NORMAL_PAGE, 1 for LARGE_PAGE, 2 for HUGE_PAGE")
+        ->check(CLI::Range(0, 2));
 
     app.add_option("hook_module", hook_module, "Module to hook in the IAT (e.g., \"user32.dll\")");
 
@@ -46,7 +54,7 @@ int main(int argc, char* argv[]) {
     app.add_option("target_module", target_module, "Module whose IAT to hook (e.g., \"Notepad.exe\")");
 
     // add example
-    app.footer("Example: pm-mapper.exe Notepad C:\\path\\to\\payload.dll 0 1 user32.dll GetMessageW Notepad.exe");
+    app.footer("Example: pm-mapper.exe Notepad C:\\path\\to\\payload.dll 0 0 1 0 user32.dll GetMessageW Notepad.exe");
 
     // parse arguments
     try {
@@ -70,7 +78,7 @@ int main(int argc, char* argv[]) {
     shadowcall<HMODULE>("LoadLibraryA", ("bcrypt.dll"));
 
     // initialize the driver
-    if (!kdmapper::Init()) {
+    if (!kdmapper::Init(static_cast<nt::driver_alloc_mode>(driver_alloc_mode), static_cast<nt::memory_type>(driver_mem_type))) {
         log("ERROR", "driver failed to map");
         return 1;
     }
@@ -114,49 +122,82 @@ int main(int argc, char* argv[]) {
         log("INFO", "using DLL from disk");
     }
 
-    // map memory type to string for logging
-    std::string mem_type_str;
-    if (mem_type == driver->memory_type::NORMAL_PAGE) {
-        mem_type_str = "NORMAL_PAGE";
+    // map dll memory type to string for logging
+    std::string dll_mem_type_str;
+    if (dll_mem_type == driver->memory_type::NORMAL_PAGE) {
+        dll_mem_type_str = "NORMAL_PAGE";
     }
-    else if (mem_type == driver->memory_type::LARGE_PAGE) {
-        mem_type_str = "LARGE_PAGE";
+    else if (dll_mem_type == driver->memory_type::LARGE_PAGE) {
+        dll_mem_type_str = "LARGE_PAGE";
     }
-    else if (mem_type == driver->memory_type::HUGE_PAGE) {
-        mem_type_str = "HUGE_PAGE";
+    else if (dll_mem_type == driver->memory_type::HUGE_PAGE) {
+        dll_mem_type_str = "HUGE_PAGE";
     }
     else {
-        mem_type_str = "UNKNOWN";
+        dll_mem_type_str = "UNKNOWN";
+    }
+
+    // map driver memory type to string for logging
+    std::string driver_mem_type_str;
+    if (driver_mem_type == nt::NORMAL_PAGE) {
+        driver_mem_type_str = "NORMAL_PAGE";
+    }
+    else if (driver_mem_type == nt::LARGE_PAGE) {
+        driver_mem_type_str = "LARGE_PAGE";
+    }
+    else if (driver_mem_type == nt::HUGE_PAGE) {
+        driver_mem_type_str = "HUGE_PAGE";
+    }
+    else {
+        driver_mem_type_str = "UNKNOWN";
+    }
+
+    // map driver allocation mode to string for logging
+    std::string driver_alloc_mode_str;
+    if (driver_alloc_mode == nt::ALLOC_IN_SYSTEM_CONTEXT) {
+        driver_alloc_mode_str = "ALLOC_IN_SYSTEM_CONTEXT";
+    }
+    else if (driver_alloc_mode == nt::ALLOC_IN_NTOSKRNL_DATA_SECTION) {
+        driver_alloc_mode_str = "ALLOC_IN_NTOSKRNL_DATA_SECTION";
+    }
+    else if (driver_alloc_mode == nt::ALLOC_IN_CURRENT_PROCESS_CONTEXT) {
+        driver_alloc_mode_str = "ALLOC_IN_CURRENT_PROCESS_CONTEXT";
+    }
+    else {
+        driver_alloc_mode_str = "UNKNOWN";
     }
 
     // map allocation mode to string for logging
-    std::string alloc_mode_str;
-    if (alloc_mode == driver->alloc_mode::ALLOC_INSIDE_MAIN_MODULE) {
-        alloc_mode_str = "ALLOC_INSIDE_MAIN_MODULE";
+    std::string dll_alloc_mode_str;
+    if (dll_alloc_mode == driver->alloc_mode::ALLOC_INSIDE_MAIN_MODULE) {
+        dll_alloc_mode_str = "ALLOC_INSIDE_MAIN_MODULE";
     }
-    else if (alloc_mode == driver->alloc_mode::ALLOC_BETWEEN_LEGIT_MODULES) {
-        alloc_mode_str = "ALLOC_BETWEEN_LEGIT_MODULES";
+    else if (dll_alloc_mode == driver->alloc_mode::ALLOC_BETWEEN_LEGIT_MODULES) {
+        dll_alloc_mode_str = "ALLOC_BETWEEN_LEGIT_MODULES";
     }
-    else if (alloc_mode == driver->alloc_mode::ALLOC_AT_LOW_ADDRESS) {
-        alloc_mode_str = "ALLOC_AT_LOW_ADDRESS";
+    else if (dll_alloc_mode == driver->alloc_mode::ALLOC_AT_LOW_ADDRESS) {
+        dll_alloc_mode_str = "ALLOC_AT_LOW_ADDRESS";
     }
-    else if (alloc_mode == driver->alloc_mode::ALLOC_AT_HIGH_ADDRESS) {
-        alloc_mode_str = "ALLOC_AT_HIGH_ADDRESS";
+    else if (dll_alloc_mode == driver->alloc_mode::ALLOC_AT_HIGH_ADDRESS) {
+        dll_alloc_mode_str = "ALLOC_AT_HIGH_ADDRESS";
     }
     else {
-        alloc_mode_str = "UNKNOWN";
+        dll_alloc_mode_str = "UNKNOWN";
     }
 
-    log("INFO", "memory type: %s", mem_type_str.c_str());
-    log("INFO", "allocation mode: %s", alloc_mode_str.c_str());
+    log("INFO", "driver allocation mode: %s", driver_alloc_mode_str.c_str());
+    log("INFO", "driver memory type: %s", driver_mem_type_str.c_str());
+
+    log("INFO", "dll allocation mode: %s", dll_alloc_mode_str.c_str());
+    log("INFO", "dll memory type: %s", dll_mem_type_str.c_str());
+
     log("INFO", "IAT Hook module: %s", hook_module.c_str());
     log("INFO", "IAT Hook function: %s", hook_function.c_str());
     log("INFO", "IAT Target module: %s", target_module.empty() ? "Main Module" : target_module.c_str());
 
     // initialize the injector with the IAT hook parameters
     injector->set_iat_hook_params(hook_module.c_str(), hook_function.c_str(), w_target_module.c_str());
-
-    if (!injector->run(pid, tid, dll_bytes, dll_size, static_cast<driver_t::memory_type>(mem_type), static_cast<driver_t::alloc_mode>(alloc_mode))) {
+    if (!injector->run(pid, tid, dll_bytes, dll_size, static_cast<driver_t::memory_type>(dll_mem_type), static_cast<driver_t::alloc_mode>(dll_alloc_mode))) {
         log("ERROR", "failed to inject");
         return 1;
     }

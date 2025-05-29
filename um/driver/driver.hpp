@@ -23,6 +23,7 @@ public:
         ALLOC_AT_HIGH_ADDRESS
     };
 
+
     inline [[nodiscard]] auto initialize() -> bool {
         auto ntdll = shadowcall<HMODULE>("LoadLibraryA", "ntdll.dll");
         if (!ntdll) {
