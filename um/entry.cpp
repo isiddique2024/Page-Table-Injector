@@ -29,32 +29,123 @@ int main(int argc, char* argv[]) {
     std::string hook_function = "GetMessageW";
     std::string target_module = "";
 
-    // add options
-    app.add_option("window_name", window_name, "Name of the target window (e.g., \"Notepad\")")
+    // additional options for better UX
+    bool verbose = false;
+    bool dry_run = false;
+
+    // required argument - target window
+    app.add_option("target", window_name, "Target window name (e.g., \"Notepad\")")
         ->required();
 
-    app.add_option("dll_path", dll_path, "Path to the DLL file to inject, or \"memory\" to use the in-memory message box DLL");
+    // optional DLL path with validation
+    app.add_option("-d,--dll", dll_path, "Path to DLL file or \"memory\" for embedded MessageBox DLL")
+        ->check(CLI::ExistingFile.description("") | CLI::IsMember({ "memory" }))
+        ->capture_default_str();
 
-    app.add_option("driver_alloc_mode", driver_alloc_mode, "Driver allocation mode: 0 for ALLOC_IN_SYSTEM_CONTEXT, 1 for ALLOC_IN_NTOSKRNL_DATA_SECTION, 2 for ALLOC_IN_CURRENT_PROCESS_CONTEXT")
-        ->check(CLI::Range(0, 2));
+    // driver configuration group
+    auto* driver_group = app.add_option_group("Driver Options", "Driver memory allocation settings");
 
-    app.add_option("driver_memory_type", driver_mem_type, "Driver Memory type: 0 for NORMAL_PAGE, 1 for LARGE_PAGE, 2 for HUGE_PAGE")
-        ->check(CLI::Range(0, 2));
+    auto driver_alloc_map = std::map<std::string, std::uint32_t>{
+        {"system", nt::ALLOC_IN_SYSTEM_CONTEXT},
+        {".data", nt::ALLOC_IN_NTOSKRNL_DATA_SECTION},
+        {"current-process", nt::ALLOC_IN_CURRENT_PROCESS_CONTEXT}
+    };
 
-    app.add_option("dll_alloc_mode", dll_alloc_mode, "DLL Allocation mode: 0 for ALLOC_INSIDE_MAIN_MODULE, 1 for ALLOC_BETWEEN_LEGIT_MODULES, 2 for ALLOC_AT_LOW_ADDRESS, 3 for ALLOC_AT_HIGH_ADDRESS")
-        ->check(CLI::Range(0, 3));
+    auto memory_type_map = std::map<std::string, std::uint32_t>{
+        {"normal", nt::NORMAL_PAGE},
+        {"large", nt::LARGE_PAGE},
+        {"huge", nt::HUGE_PAGE}
+    };
 
-    app.add_option("dll_memory_type", dll_mem_type, "DLL Memory type: 0 for NORMAL_PAGE, 1 for LARGE_PAGE, 2 for HUGE_PAGE")
-        ->check(CLI::Range(0, 2));
+    driver_group->add_option("--driver-alloc", driver_alloc_mode, "Driver allocation strategy")
+        ->transform(CLI::CheckedTransformer(driver_alloc_map, CLI::ignore_case))
+        ->capture_default_str()
+        ->description("system: System context allocation\n"
+            ".data: Inside ntoskrnl .data section\n"
+            "current-process: Current process context (default)");
 
-    app.add_option("hook_module", hook_module, "Module to hook in the IAT (e.g., \"user32.dll\")");
+    driver_group->add_option("--driver-memory", driver_mem_type, "Driver memory page size")
+        ->transform(CLI::CheckedTransformer(memory_type_map, CLI::ignore_case))
+        ->capture_default_str()
+        ->description("normal: 4KB pages (default)\n"
+            "large: 2MB pages\n"
+            "huge: 1GB pages (not supported yet)");
 
-    app.add_option("hook_function", hook_function, "Function to hook in the IAT (e.g., \"GetMessageW\")");
+    // DLL configuration group
+    auto* dll_group = app.add_option_group("DLL Options", "DLL memory allocation settings");
 
-    app.add_option("target_module", target_module, "Module whose IAT to hook (e.g., \"Notepad.exe\")");
+    auto dll_alloc_map = std::map<std::string, std::uint32_t>{
+        {"inside-main", driver->alloc_mode::ALLOC_INSIDE_MAIN_MODULE},
+        {"between-modules", driver->alloc_mode::ALLOC_BETWEEN_LEGIT_MODULES},
+        {"low-address", driver->alloc_mode::ALLOC_AT_LOW_ADDRESS},
+        {"high-address", driver->alloc_mode::ALLOC_AT_HIGH_ADDRESS}
+    };
 
-    // add example
-    app.footer("Example: pm-mapper.exe Notepad C:\\path\\to\\payload.dll 0 0 1 0 user32.dll GetMessageW Notepad.exe");
+    auto dll_memory_map = std::map<std::string, std::uint32_t>{
+        {"normal", driver->memory_type::NORMAL_PAGE},
+        {"large", driver->memory_type::LARGE_PAGE},
+        {"huge", driver->memory_type::HUGE_PAGE}
+    };
+
+    dll_group->add_option("--dll-alloc", dll_alloc_mode, "DLL allocation strategy")
+        ->transform(CLI::CheckedTransformer(dll_alloc_map, CLI::ignore_case))
+        ->capture_default_str()
+        ->description("inside-main: Hijack PTEs in main module\n"
+            "between-modules: Allocate between legitimate modules (default)\n"
+            "low-address: Usermode space (PML4 0-255)\n"
+            "high-address: Kernel space (PML4 256-511)");
+
+    dll_group->add_option("--dll-memory", dll_mem_type, "DLL memory page size")
+        ->transform(CLI::CheckedTransformer(dll_memory_map, CLI::ignore_case))
+        ->capture_default_str()
+        ->description("normal: 4KB pages (default)\n"
+            "large: 2MB pages\n"
+            "huge: 1GB pages (not supported yet)");
+
+    // hook configuration group  
+    auto* hook_group = app.add_option_group("Hook Options", "IAT hooking configuration");
+
+    hook_group->add_option("--hook-module", hook_module, "Module to hook in the IAT")
+        ->capture_default_str();
+
+    hook_group->add_option("--hook-function", hook_function, "Function to hook in the IAT")
+        ->capture_default_str();
+
+    hook_group->add_option("--target-module", target_module,
+        "Module whose IAT to hook (empty = main module)");
+
+    // utility options
+    app.add_flag("-v,--verbose", verbose, "Enable detailed logging");
+    app.add_flag("--dry-run", dry_run, "Show configuration without injecting");
+
+    // enhanced help with examples
+    app.get_formatter()->column_width(50);
+    app.footer(R"(Examples:
+  Basic Usage:
+    pm-mapper.exe Notepad                   # Inject embedded DLL into Notepad using default settings
+    pm-mapper.exe Notepad -d payload.dll    # Inject custom DLL using default settings
+    pm-mapper.exe Notepad --dry-run -v      # Preview configuration without executing
+
+  Advanced Configuration:
+    pm-mapper.exe Notepad -d test.dll \
+      --driver-alloc system --dll-alloc inside-main
+
+  Stealth Configuration:
+    pm-mapper.exe Notepad -d payload.dll \
+      --driver-alloc current-process --driver-memory large \
+      --dll-alloc between-modules --dll-memory normal \
+      --hook-module kernel32.dll --hook-function CreateFileW
+
+  Large Page Configuration:
+    pm-mapper.exe Notepad -d payload.dll \
+      --driver-alloc current-process --driver-memory large \
+      --dll-alloc low-address --dll-memory large \
+      --hook-module kernel32.dll --hook-function CreateFileW
+
+  Preview Mode:
+    pm-mapper.exe Notepad --dry-run -v      # Show what will happen without injecting
+
+Note: Use quotes around window names with spaces)");
 
     // parse arguments
     try {
@@ -62,6 +153,43 @@ int main(int argc, char* argv[]) {
     }
     catch (const CLI::ParseError& e) {
         return app.exit(e);
+    }
+
+    // validate and warnings
+    if (driver_mem_type == nt::HUGE_PAGE || dll_mem_type == driver->memory_type::HUGE_PAGE) {
+        log("WARNING", "huge pages (1GB) are not yet supported, falling back to large pages");
+        if (driver_mem_type == nt::HUGE_PAGE) driver_mem_type = nt::LARGE_PAGE;
+        if (dll_mem_type == driver->memory_type::HUGE_PAGE) dll_mem_type = driver->memory_type::LARGE_PAGE;
+    }
+
+    // show configuration if verbose or dry-run
+    if (verbose || dry_run) {
+        std::cout << "\n=== PM-Mapper Configuration ===\n";
+        std::cout << "Target Window: " << window_name << "\n";
+        std::cout << "DLL Source: " << dll_path << "\n";
+
+        // map back to readable names for display
+        std::string driver_alloc_str, driver_mem_str, dll_alloc_str, dll_mem_str;
+
+        for (auto& [name, val] : driver_alloc_map)
+            if (val == driver_alloc_mode) { driver_alloc_str = name; break; }
+        for (auto& [name, val] : memory_type_map)
+            if (val == driver_mem_type) { driver_mem_str = name; break; }
+        for (auto& [name, val] : dll_alloc_map)
+            if (val == dll_alloc_mode) { dll_alloc_str = name; break; }
+        for (auto& [name, val] : dll_memory_map)
+            if (val == dll_mem_type) { dll_mem_str = name; break; }
+
+        std::cout << "Driver: " << driver_alloc_str << " allocation, " << driver_mem_str << " pages\n";
+        std::cout << "DLL: " << dll_alloc_str << " allocation, " << dll_mem_str << " pages\n";
+        std::cout << "Hook: " << hook_function << " in " << hook_module;
+        if (!target_module.empty()) std::cout << " (target: " << target_module << ")";
+        std::cout << "\n" << std::string(35, '=') << "\n\n";
+
+        if (dry_run) {
+            std::cout << "[DRY RUN] Configuration validated - no injection performed\n";
+            return 0;
+        }
     }
 
     // convert window_name to wstring
@@ -119,40 +247,10 @@ int main(int argc, char* argv[]) {
 
         dll_bytes = file_bytes.data();
         dll_size = file_bytes.size();
-        log("INFO", "using DLL from disk");
+        log("INFO", "using DLL from disk: %s", dll_path.c_str());
     }
 
-    // map dll memory type to string for logging
-    std::string dll_mem_type_str;
-    if (dll_mem_type == driver->memory_type::NORMAL_PAGE) {
-        dll_mem_type_str = "NORMAL_PAGE";
-    }
-    else if (dll_mem_type == driver->memory_type::LARGE_PAGE) {
-        dll_mem_type_str = "LARGE_PAGE";
-    }
-    else if (dll_mem_type == driver->memory_type::HUGE_PAGE) {
-        dll_mem_type_str = "HUGE_PAGE";
-    }
-    else {
-        dll_mem_type_str = "UNKNOWN";
-    }
-
-    // map driver memory type to string for logging
-    std::string driver_mem_type_str;
-    if (driver_mem_type == nt::NORMAL_PAGE) {
-        driver_mem_type_str = "NORMAL_PAGE";
-    }
-    else if (driver_mem_type == nt::LARGE_PAGE) {
-        driver_mem_type_str = "LARGE_PAGE";
-    }
-    else if (driver_mem_type == nt::HUGE_PAGE) {
-        driver_mem_type_str = "HUGE_PAGE";
-    }
-    else {
-        driver_mem_type_str = "UNKNOWN";
-    }
-
-    // map driver allocation mode to string for logging
+    // enhanced logging with readable names
     std::string driver_alloc_mode_str;
     if (driver_alloc_mode == nt::ALLOC_IN_SYSTEM_CONTEXT) {
         driver_alloc_mode_str = "ALLOC_IN_SYSTEM_CONTEXT";
@@ -167,7 +265,20 @@ int main(int argc, char* argv[]) {
         driver_alloc_mode_str = "UNKNOWN";
     }
 
-    // map allocation mode to string for logging
+    std::string driver_mem_type_str;
+    if (driver_mem_type == nt::NORMAL_PAGE) {
+        driver_mem_type_str = "NORMAL_PAGE";
+    }
+    else if (driver_mem_type == nt::LARGE_PAGE) {
+        driver_mem_type_str = "LARGE_PAGE";
+    }
+    else if (driver_mem_type == nt::HUGE_PAGE) {
+        driver_mem_type_str = "HUGE_PAGE";
+    }
+    else {
+        driver_mem_type_str = "UNKNOWN";
+    }
+
     std::string dll_alloc_mode_str;
     if (dll_alloc_mode == driver->alloc_mode::ALLOC_INSIDE_MAIN_MODULE) {
         dll_alloc_mode_str = "ALLOC_INSIDE_MAIN_MODULE";
@@ -185,15 +296,29 @@ int main(int argc, char* argv[]) {
         dll_alloc_mode_str = "UNKNOWN";
     }
 
-    log("INFO", "driver allocation mode: %s", driver_alloc_mode_str.c_str());
-    log("INFO", "driver memory type: %s", driver_mem_type_str.c_str());
+    std::string dll_mem_type_str;
+    if (dll_mem_type == driver->memory_type::NORMAL_PAGE) {
+        dll_mem_type_str = "NORMAL_PAGE";
+    }
+    else if (dll_mem_type == driver->memory_type::LARGE_PAGE) {
+        dll_mem_type_str = "LARGE_PAGE";
+    }
+    else if (dll_mem_type == driver->memory_type::HUGE_PAGE) {
+        dll_mem_type_str = "HUGE_PAGE";
+    }
+    else {
+        dll_mem_type_str = "UNKNOWN";
+    }
 
-    log("INFO", "dll allocation mode: %s", dll_alloc_mode_str.c_str());
-    log("INFO", "dll memory type: %s", dll_mem_type_str.c_str());
-
-    log("INFO", "IAT Hook module: %s", hook_module.c_str());
-    log("INFO", "IAT Hook function: %s", hook_function.c_str());
-    log("INFO", "IAT Target module: %s", target_module.empty() ? "Main Module" : target_module.c_str());
+    if (verbose) {
+        log("INFO", "driver allocation mode: %s", driver_alloc_mode_str.c_str());
+        log("INFO", "driver memory type: %s", driver_mem_type_str.c_str());
+        log("INFO", "dll allocation mode: %s", dll_alloc_mode_str.c_str());
+        log("INFO", "dll memory type: %s", dll_mem_type_str.c_str());
+        log("INFO", "IAT Hook module: %s", hook_module.c_str());
+        log("INFO", "IAT Hook function: %s", hook_function.c_str());
+        log("INFO", "IAT Target module: %s", target_module.empty() ? "Main Module" : target_module.c_str());
+    }
 
     // initialize the injector with the IAT hook parameters
     injector->set_iat_hook_params(hook_module.c_str(), hook_function.c_str(), w_target_module.c_str());

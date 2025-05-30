@@ -10,26 +10,25 @@ Tested from **Windows 10 20H2 19042** to **Windows 11 24H2 26100.3775**
 
 https://github.com/user-attachments/assets/1f3a2385-42e8-497b-a738-0909e9a77cf6
 
-
 ## Features
 
 - **Driver Allocation Methods**:
-    - Allocate within system context 
-    - Map driver within ntoskrnl's .data section
-    - Allocate at a non present PML4E address within current process context in kernel space (PML4 index 256 - 511)
+    - System context allocation (`system`)
+    - Map driver within ntoskrnl's .data section (`.data`)
+    - Allocate at a non present PML4E address within current process context in kernel space (`current-process`) - PML4 index 256-511
 - **Driver Memory Page Types**:
-    - Normal Pages (4KB)
-    - Large Pages (2MB)
-    - Huge Pages (1GB) (not yet supported)
+    - Normal Pages (`normal`) - 4KB
+    - Large Pages (`large`) - 2MB
+    - Huge Pages (`huge`) - 1GB (not yet supported)
 - **DLL Allocation Methods**:
-    - Hijack PTEs with PTE.PageFrameNumber = 0 within the main module's .text section
-    - Allocate between legitimate modules
-    - Allocate at a non present PML4E address in usermode space (PML4 index 0 - 255)
-    - Allocate at a non present PML4E address in kernel space (PML4 index 256 - 511)
+    - Hijack PTEs with PTE.PageFrameNumber = 0 within the main module's .text section (`inside-main`)
+    - Allocate between legitimate modules (`between-modules`)
+    - Allocate at a non present PML4E address in usermode space (`low-address`) - PML4 index 0-255
+    - Allocate at a non present PML4E address in kernel space (`high-address`) - PML4 index 256-511
 - **DLL Memory Page Types**:
-    - Normal Pages (4KB)
-    - Large Pages (2MB)
-    - Huge Pages (1GB) (not yet supported)
+    - Normal Pages (`normal`) - 4KB
+    - Large Pages (`large`) - 2MB
+    - Huge Pages (`huge`) - 1GB (not yet supported)
 - **Advanced Anti-Detection Mechanisms**:
     - Marks the MMPFN's ParityError bit to 1 in the _MMPFNENTRY3 structure
     - Causes MmCopyMemory to return NTSTATUS 0xC0000709 (STATUS_HARDWARE_MEMORY_ERROR) on the DLL physical pages
@@ -38,45 +37,90 @@ https://github.com/user-attachments/assets/1f3a2385-42e8-497b-a738-0909e9a77cf6
 - **Support for Various Payloads**:
     - Load DLL from disk
     - Use embedded in-memory DLL (MessageBox by default)
+- **Enhanced User Experience**:
+    - Intuitive command-line interface with named arguments
+    - Verbose logging mode for detailed operation insights
+    - Dry-run mode for configuration preview
+    - Comprehensive help with examples
+    - Input validation and error handling
 
 ## Usage
 
 ```
-pm-mapper.exe [window_name] [dll_path] [driver_alloc_mode] [driver_memory_type] [dll_alloc_mode] [dll_memory_type] [hook_module] [hook_function] [target_module]
+pm-mapper.exe <target> [OPTIONS]
 ```
 
-### Parameters
+### Basic Usage Examples
 
-- **window_name**: Name of the target window (e.g., "Notepad") (required)
-- **dll_path**: Path to the DLL file to inject, or "memory" to use the in-memory message box DLL (default: memory)
-- **driver_alloc_mode**: Driver memory allocation strategy
-    - 0: ALLOC_IN_SYSTEM_CONTEXT 
-    - 1: ALLOC_IN_NTOSKRNL_DATA_SECTION
-    - 2: ALLOC_IN_CURRENT_PROCESS_CONTEXT (kernel space) (default)
-- **driver_memory_type**: Driver memory page size to use
-    - 0: NORMAL_PAGE (4KB pages) (default)
-    - 1: LARGE_PAGE (2MB pages) 
-    - 2: HUGE_PAGE (1GB pages) (not yet supported)
-- **dll_alloc_mode**: DLL memory allocation strategy
-    - 0: ALLOC_INSIDE_MAIN_MODULE 
-    - 1: ALLOC_BETWEEN_LEGIT_MODULES (default)
-    - 2: ALLOC_AT_LOW_ADDRESS (usermode space)
-    - 3: ALLOC_AT_HIGH_ADDRESS (kernel space)
-- **dll_memory_type**: DLL memory page size to use
-    - 0: NORMAL_PAGE (4KB pages) (default)
-    - 1: LARGE_PAGE (2MB pages) 
-    - 2: HUGE_PAGE (1GB pages) (not yet supported)
-- **hook_module**: Module to hook in the IAT (default: user32.dll)
-- **hook_function**: Function to hook in the IAT (default: GetMessageW)
-- **target_module**: Module whose IAT to hook (default: Main Module)
+```bash
+# Inject embedded DLL into Notepad using default settings
+pm-mapper.exe Notepad
 
-### Example
+# Inject custom DLL using default settings  
+pm-mapper.exe Notepad -d payload.dll
 
-```
-pm-mapper.exe Notepad C:\path\to\payload.dll 0 0 1 0 user32.dll GetMessageW Notepad.exe
+# Preview configuration without executing
+pm-mapper.exe Notepad --dry-run -v
 ```
 
-This command maps the driver into system memory, injects payload.dll into the Notepad process with memory allocated strategically inbetween two legitimate modules for evasion, and hooks the GetMessageW API function in user32.dll for entry point execution - all operations use standard 4KB memory pages.
+### Advanced Configuration Examples
+
+```bash
+# Driver current process allocation and stealthy DLL allocation
+pm-mapper.exe Notepad -d memory --driver-alloc current-process --driver-memory large --dll-alloc between-modules --dll-memory normal --hook-module user32.dll --hook-function GetMessageW --target-module notepad.exe
+
+# System-level allocation
+pm-mapper.exe Notepad -d memory --driver-alloc system --dll-alloc inside-main -dll-memory normal --hook-module user32.dll --hook-function GetMessageW --target-module notepad.exe
+
+# Driver and DLL large page allocation
+pm-mapper.exe Notepad -d memory --driver-alloc current-process --driver-memory large --dll-alloc low-address -dll-memory large --hook-module user32.dll --hook-function GetMessageW --target-module notepad.exe
+```
+
+## Parameters
+
+### Required Arguments
+- **target**: Target window name (e.g., "Notepad", "Calculator")
+
+### Optional Arguments
+
+#### DLL Options
+- **-d, --dll**: Path to DLL file or "memory" for embedded MessageBox DLL (default: memory)
+
+#### Driver Options  
+- **--driver-alloc**: Driver allocation strategy (default: current-process)
+  - `system`: System context allocation
+  - `.data`: Inside ntoskrnl .data section  
+  - `current-process`: Current process context (default)
+- **--driver-memory**: Driver memory page size (default: normal)
+  - `normal`: 4KB pages (default)
+  - `large`: 2MB pages
+  - `huge`: 1GB pages (not supported yet)
+
+#### DLL Options
+- **--dll-alloc**: DLL allocation strategy (default: between-modules)
+  - `inside-main`: Hijack PTEs in main module
+  - `between-modules`: Allocate between legitimate modules (default)
+  - `low-address`: Usermode space (PML4 0-255)
+  - `high-address`: Kernel space (PML4 256-511)
+- **--dll-memory**: DLL memory page size (default: normal)
+  - `normal`: 4KB pages (default)
+  - `large`: 2MB pages
+  - `huge`: 1GB pages (not supported yet)
+
+#### Hook Options
+- **--hook-module**: Module to hook in the IAT (default: user32.dll)
+- **--hook-function**: Function to hook in the IAT (default: GetMessageW)  
+- **--target-module**: Module whose IAT to hook (empty = main module)
+
+#### Utility Options
+- **-v, --verbose**: Enable detailed logging
+- **--dry-run**: Show configuration without injecting
+
+### Help and Examples
+
+Use `pm-mapper.exe --help` to see comprehensive usage information with examples.
+
+**Note**: Use quotes around window names containing spaces (e.g., "Google Chrome")
 
 ## Technical Details
 
