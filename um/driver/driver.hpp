@@ -20,7 +20,8 @@ public:
         ALLOC_INSIDE_MAIN_MODULE,
         ALLOC_BETWEEN_LEGIT_MODULES,
         ALLOC_AT_LOW_ADDRESS,
-        ALLOC_AT_HIGH_ADDRESS
+        ALLOC_AT_HIGH_ADDRESS,
+        ALLOC_AT_HYPERSPACE
     };
 
 
@@ -88,10 +89,28 @@ public:
         return write_virtual_memory(pid, address, &value, sizeof(T));
     }
 
-    inline auto allocate_independent_pages(std::uint32_t local_pid, std::uint32_t target_pid, std::size_t size, bool use_large_pages, std::uint32_t alloc_mode) -> void* {
-        allocate_independent_pages_request data{ local_pid, target_pid, nullptr, size, use_large_pages, alloc_mode };
+    inline auto allocate_independent_pages(std::uint32_t local_pid, std::uint32_t target_pid, std::uint32_t target_tid, std::size_t size, bool use_large_pages, std::uint32_t alloc_mode) -> void* {
+        allocate_independent_pages_request data{ local_pid, target_pid, target_tid, nullptr, size, use_large_pages, alloc_mode };
         send_driver_request(&data, request_codes::allocate_independent_pages);
         return data.address;
+    }
+
+    inline auto execute_dll_via_thread(std::uint32_t local_pid, std::uint32_t target_pid, std::uint32_t target_tid, void* address, unsigned int entry_point, std::uint32_t alloc_mode) -> bool {
+        execute_dll_via_thread_request data{ local_pid, target_pid, target_tid, address, entry_point, alloc_mode };
+        send_driver_request(&data, request_codes::execute_dll_entrypoint);
+        return data.success;
+        
+    }
+
+    inline auto swap_context_to_hyperspace(std::uint32_t target_tid) -> bool {
+        swap_context_request data{ target_tid };
+        return send_driver_request(&data, request_codes::swap_context);
+    }
+
+    inline auto restore_context(std::uint32_t target_tid) -> bool {
+        swap_context_request data{ target_tid };
+        return send_driver_request(&data, request_codes::restore_context);
+
     }
 
 
@@ -110,6 +129,9 @@ private:
         unique = 0x92b,
         unload = 0x93c,
         allocate_independent_pages = 0x101c,
+        execute_dll_entrypoint = 0x102c,
+        swap_context = 0x103c,
+        restore_context = 0x104
     };
 
     struct unload_request {
@@ -139,9 +161,25 @@ private:
     struct allocate_independent_pages_request { 
         std::uint32_t local_pid; 
         std::uint32_t target_pid; 
-        void* address; std::size_t size; 
+        std::uint32_t target_tid;
+        void* address; 
+        std::size_t size; 
         bool use_large_page; 
         std::uint32_t alloc_mode; 
+    };
+
+    struct execute_dll_via_thread_request {
+        std::uint32_t local_pid;
+        std::uint32_t target_pid;
+        std::uint32_t target_tid;
+        void* alloc_base;
+        unsigned long entry_point;
+        std::uint32_t alloc_mode;
+        bool success;
+    };
+
+    struct swap_context_request {
+        std::uint32_t target_tid;
     };
 
     struct pattern_request {

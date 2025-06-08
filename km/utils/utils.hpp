@@ -41,13 +41,14 @@ namespace utils
         uintptr_t base = 0;
         if (!NT_SUCCESS(globals::ps_lookup_process_by_process_id((HANDLE)pid, &target_proc)))
             return 0;
-        //physical::init();
+
         // get PEB address
         PPEB peb_address = globals::ps_get_process_peb(target_proc);
         if (!peb_address) {
             globals::obf_dereference_object(target_proc);
             return 0;
         }
+
         // read PEB using physical memory read
         PEB peb{};
         physical::read_process_memory(target_proc, reinterpret_cast<ULONG64>(peb_address), &peb, sizeof(PEB));

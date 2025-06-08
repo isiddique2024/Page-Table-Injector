@@ -17,6 +17,7 @@ namespace mem {
         return physical_address;
     }
 
+
     auto safe_copy(void* const dst, void* const src, const size_t size) -> bool 
     {
         SIZE_T bytes = 0;
@@ -87,75 +88,94 @@ namespace mem {
         return module_base;
     }
 
-    bool hide_physical_memory(void* current_va, remove_type type) {
-        const auto physical_address = mem::virtual_to_physical(current_va);
-        if (!physical_address.QuadPart) {
-            log("ERROR", "failed to get physical address for VA: %p", current_va);
-            return false;
-        }
-
-        const auto page_frame_number = physical_address.QuadPart >> PAGE_SHIFT;
+    bool hide_physical_memory(uintptr_t page_frame_number, hide_type type) {
 
         const auto pfn_entry_addr = *reinterpret_cast<uintptr_t*>(globals::mm_pfn_db) +
             0x30 * (page_frame_number);
 
-
         switch (type) {
-            case remove_type::PFN_EXISTS_BIT: // returns 0xC0000141, STATUS_INVALID_ADDRESS, The address handle that was given to the transport was invalid.
-            {
-                const auto PFN_EXISTS_BIT = (globals::build_version >= 22000) ?
-                    (1ULL << 54) : (1ULL << 50);
+        case hide_type::NONE:
+        {
+            break;
+        }
+        case hide_type::PFN_EXISTS_BIT: // returns 0xC0000141, STATUS_INVALID_ADDRESS, The address handle that was given to the transport was invalid.
+        {
+            const auto PFN_EXISTS_BIT = (globals::build_version >= 22000) ?
+                (1ULL << 54) : (1ULL << 50);
 
-                auto* u4_field = reinterpret_cast<uint64_t*>(
-                    reinterpret_cast<uint8_t*>(pfn_entry_addr) + 0x28
-                    );
+            auto* u4_field = reinterpret_cast<uint64_t*>(
+                reinterpret_cast<uint8_t*>(pfn_entry_addr) + 0x28
+                );
 
-                *u4_field &= ~PFN_EXISTS_BIT;
-                break;
+            *u4_field &= ~PFN_EXISTS_BIT;
+            break;
+        }
+
+        case hide_type::MI_REMOVE_PHYSICAL_MEMORY: // returns 0xC0000141, STATUS_INVALID_ADDRESS, The address handle that was given to the transport was invalid.
+        {
+            const auto FLAGS = globals::build_version >= 26100 ? 0x62 : 0x32;
+
+            // removes PFN from MmPhysicalMemoryBlock
+            NTSTATUS status = globals::mi_remove_physical_memory(page_frame_number, 1, FLAGS);
+            if (!NT_SUCCESS(status)) {
+                log("ERROR", "failed to remove physical memory on 0x%llx status 0x%X", page_frame_number, status);
+                return false;
             }
 
-            case remove_type::MI_REMOVE_PHYSICAL_MEMORY: // returns 0xC0000141, STATUS_INVALID_ADDRESS, The address handle that was given to the transport was invalid.
-            {
-                const auto FLAGS = globals::build_version >= 26100 ? 0x62 : 0x32;
+            // nulls PFN entry for physical page
+            globals::memset(reinterpret_cast<void*>(pfn_entry_addr), 0, 0x30);
 
-                // removes PFN from MmPhysicalMemoryBlock
-                NTSTATUS status = globals::mi_remove_physical_memory(page_frame_number, 1, FLAGS);
-                if (!NT_SUCCESS(status)) {
-                    log("ERROR", "failed to remove physical memory on 0x%llx status 0x%X", page_frame_number, status);
-                    return false;
-                }
+            break;
+        }
+        case hide_type::SET_PARITY_ERROR:
+        {
+            // get pointers to the structures
+            auto* e3_field = reinterpret_cast<_MMPFNENTRY3*>(pfn_entry_addr + 0x23);
 
-                // nulls PFN entry for physical page
-                globals::memset(reinterpret_cast<void*>(pfn_entry_addr), 0, 0x30);
+            // set ParityError, causes MmCopyMemory to return 0xC0000709 (STATUS_HARDWARE_MEMORY_ERROR) on the physical pages
+            e3_field->ParityError = 1;
 
-                break;
-            }
-            case remove_type::SET_LOCK_BIT:
-            {
-                // get pointers to the structures
-                auto* u2 = reinterpret_cast<_MIPFNBLINK*>(pfn_entry_addr + 0x18);
+            break;
+        }
+        case hide_type::SET_LOCK_BIT:
+        {
+            // get pointers to the structures
+            auto* u2 = reinterpret_cast<_MIPFNBLINK*>(pfn_entry_addr + 0x18);
 
-                // set LockBit, causes CPU to yield when MmCopyMemory is called on your dll's physical address, think of this moreso as an anti-debug mechanism.
-                // This can be used to see if your allocation is stealthy enough.
-                u2->LockBit = 1;
+            // set LockBit, causes CPU to yield when MmCopyMemory is called on your dll's physical address, think of this moreso as an anti-debug mechanism.
+            // This can be used to see if your allocation is stealthy enough.
+            u2->LockBit = 1;
 
-                break;
-            }
-
-            case remove_type::SET_PARITY_ERROR:
-            {
-
-                // get pointers to the structures
-                auto* e3_field = reinterpret_cast<_MMPFNENTRY3*>(pfn_entry_addr + 0x23);
-
-                // set ParityError, causes MmCopyMemory to return 0xC0000709 (STATUS_HARDWARE_MEMORY_ERROR) on the physical pages
-                e3_field->ParityError = 1;
-
-                break;
-            }
+            break;
+        }
         }
 
         return true;
+    }
+   
+    auto allocate_independent_pages(size_t size) -> void*
+    {
+        void* base_address = globals::mm_allocate_independent_pages_ex(size, -1, 0, 0);
+        if (!base_address) {
+            log("ERROR", "failed to allocate actual page");
+            return 0;
+        }
+
+        uintptr_t pfn = mem::virtual_to_physical(base_address).QuadPart >> PAGE_SHIFT;
+        if (!pfn) {
+            globals::mm_free_independent_pages(reinterpret_cast<uintptr_t>(base_address), size);
+            log("ERROR", "failed to get pfn for page");
+            return 0;
+        }
+
+        bool hide_status = mem::hide_physical_memory(pfn, static_cast<hide_type>(globals::dll_hide_type));
+        if (!hide_status) {
+            globals::mm_free_independent_pages(reinterpret_cast<uintptr_t>(base_address), size);
+            log("ERROR", "failed to hide pfn for page");
+            return 0;
+        }
+
+        return base_address;
     }
 
     NTSTATUS write_page_tables(uintptr_t target_dir_base, uintptr_t base_va, size_t page_count, bool use_large_page) {
@@ -217,7 +237,7 @@ namespace mem {
 
                 physical::write_physical_address(pml4_phys + helper.AsIndex.Pml4 * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64));
 
-                mem::hide_physical_memory(pdpt, remove_type::SET_PARITY_ERROR);
+                mem::hide_physical_memory(pml4e.PageFrameNumber, static_cast<hide_type>(globals::dll_hide_type));
 
 
             }
@@ -243,7 +263,7 @@ namespace mem {
 
                 physical::write_physical_address(PFN_TO_PAGE(pml4e.PageFrameNumber) + helper.AsIndex.Pdpt * sizeof(PDPTE_64), &pdpte, sizeof(PDPTE_64));
 
-                mem::hide_physical_memory(pd, remove_type::SET_PARITY_ERROR);
+                mem::hide_physical_memory(pdpte.PageFrameNumber, static_cast<hide_type>(globals::dll_hide_type));
             }
 
             if (use_large_page) {
@@ -263,8 +283,7 @@ namespace mem {
 
                     physical::write_physical_address(PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64));
 
-                    mem::hide_physical_memory(actual_page, remove_type::SET_PARITY_ERROR);
-
+                    mem::hide_physical_memory(pde.PageFrameNumber, static_cast<hide_type>(globals::dll_hide_type));
                 }
             }
             else {
@@ -285,9 +304,12 @@ namespace mem {
                     pde.Present = 1;
                     pde.Write = 1;
                     pde.Supervisor = 1;
+                    pde.ExecuteDisable = 0;
                     pde.PageFrameNumber = mem::virtual_to_physical(pt).QuadPart >> PAGE_SHIFT;
 
                     physical::write_physical_address(PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64));
+
+                    mem::hide_physical_memory(pde.PageFrameNumber, static_cast<hide_type>(globals::dll_hide_type));
 
                 }
 
@@ -297,12 +319,13 @@ namespace mem {
                 pte.Present = 1;
                 pte.Write = 1;
                 pte.Supervisor = 1;
+                pte.ExecuteDisable = 0;
                 pte.PageFrameNumber = page_frame_number;
 
                 physical::write_physical_address(PFN_TO_PAGE(pde.PageFrameNumber) + helper.AsIndex.Pt * sizeof(PTE_64), &pte, sizeof(PTE_64));
-            }
 
-            mem::hide_physical_memory(actual_page, remove_type::SET_PARITY_ERROR);
+                mem::hide_physical_memory(pte.PageFrameNumber, static_cast<hide_type>(globals::dll_hide_type));
+            }
 
             log("INFO", "page %zd: va: 0x%llx, pfn: 0x%llx", i, current_va, page_frame_number);
 

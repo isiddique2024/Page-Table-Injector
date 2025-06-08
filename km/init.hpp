@@ -66,11 +66,18 @@ namespace init
             return STATUS_NOT_FOUND;
         }
 
+        globals::driver_hide_type = local_offsets.DriverHideType;
+        globals::dll_hide_type = local_offsets.DllHideType;
+
         // assign memory management functions
+        globals::mm_get_physical_address = reinterpret_cast<function_types::mm_get_physical_address_t>(local_offsets.MmGetPhysicalAddress);
         globals::mm_pfn_db = local_offsets.MmPfnDatabase;
         globals::mm_allocate_independent_pages_ex = reinterpret_cast<function_types::mm_allocate_independent_pages_ex_t>(local_offsets.MmAllocateIndependentPages);
+        globals::mm_set_page_protection = reinterpret_cast<function_types::mm_set_page_protection_t>(local_offsets.MmSetPageProtection);
+
         globals::mm_free_independent_pages = reinterpret_cast<function_types::mm_free_independent_pages>(local_offsets.MmFreeIndependentPages);
         globals::mm_allocate_contiguous_memory = reinterpret_cast<function_types::mm_allocate_contiguous_memory_t>(local_offsets.MmAllocateContiguousMemory);
+        globals::mm_free_contiguous_memory = reinterpret_cast<function_types::mm_free_contiguous_memory_t>(local_offsets.MmFreeContiguousMemory);
         globals::mm_copy_memory = reinterpret_cast<function_types::mm_copy_memory_t>(local_offsets.MmCopyMemory);
         globals::mm_get_virtual_for_physical = reinterpret_cast<function_types::mm_get_virtual_for_physical_t>(local_offsets.MmGetVirtualForPhysical);
         globals::mm_copy_virtual_memory = reinterpret_cast<function_types::mm_copy_virtual_memory_t>(local_offsets.MmCopyVirtualMemory);
@@ -79,6 +86,7 @@ namespace init
         globals::mm_get_system_routine_address = reinterpret_cast<function_types::mm_get_system_routine_address_t>(local_offsets.MmGetSystemRoutineAddress);
 
         // assign memory info functions
+        globals::mi_get_vm_access_logging_partition = reinterpret_cast<function_types::mi_get_vm_access_logging_partition_t>(local_offsets.MiGetVmAccessLoggingPartition);
         globals::mi_create_decay_pfn = reinterpret_cast<function_types::mi_create_decay_pfn_t>(local_offsets.MiCreateDecayPfn);
         globals::mi_get_ultra_page = reinterpret_cast<function_types::mi_get_ultra_page_t>(local_offsets.MiGetUltraPage);
         globals::mi_reserve_ptes = reinterpret_cast<function_types::mi_reserve_ptes_t>(local_offsets.MiReservePtes);
@@ -91,16 +99,34 @@ namespace init
         globals::mi_set_page_table_pfn_buddy = reinterpret_cast<function_types::mi_set_page_table_pfn_buddy_t>(local_offsets.MiSetPageTablePfnBuddy);
 
         // assign proc/obj functions
+        globals::ps_loaded_module_list = local_offsets.PsLoadedModuleList;
+        globals::ps_set_create_thread_notify_routine = reinterpret_cast<function_types::ps_set_create_thread_notify_routine_t>(local_offsets.PsSetCreateThreadNotifyRoutine);
+        globals::ps_set_create_process_notify_routine_ex = reinterpret_cast<function_types::ps_set_create_process_notify_routine_ex_t>(local_offsets.PsSetCreateProcessNotifyRoutineEx);
         globals::ps_lookup_process_by_process_id = reinterpret_cast<function_types::ps_lookup_process_by_process_id_t>(local_offsets.PsLookupProcessByProcessId);
+        globals::ps_lookup_thread_by_thread_id = reinterpret_cast<function_types::ps_lookup_thread_by_thread_id_t>(local_offsets.PsLookupThreadByThreadId);
+        globals::ps_get_next_process_thread = reinterpret_cast<function_types::ps_get_next_process_thread_t>(local_offsets.PsGetNextProcessThread);
+        globals::ps_suspend_thread = reinterpret_cast<function_types::ps_suspend_thread_t>(local_offsets.PsSuspendThread);
+        globals::ps_resume_thread = reinterpret_cast<function_types::ps_suspend_thread_t>(local_offsets.PsResumeThread);
+        globals::ps_query_thread_start_address = reinterpret_cast<function_types::ps_query_thread_start_address_t>(local_offsets.PsQueryThreadStartAddress);
+        globals::ps_get_current_thread_id = reinterpret_cast<function_types::ps_get_current_thread_id_t>(local_offsets.PsGetCurrentThreadId);
         globals::ps_get_process_peb = reinterpret_cast<function_types::ps_get_process_peb_t>(local_offsets.PsGetProcessPeb);
         globals::ps_get_process_image_file_name = reinterpret_cast<function_types::ps_get_process_image_file_name_t>(local_offsets.PsGetProcessImageFileName);
         globals::io_get_current_process = reinterpret_cast<function_types::io_get_current_process_t>(local_offsets.IoGetCurrentProcess);
         globals::obf_dereference_object = reinterpret_cast<function_types::obf_dereference_object_t>(local_offsets.ObfDereferenceObject);
 
+        // processor support functions
+        globals::psp_exit_thread = local_offsets.PspExitThread;
+
         // assign executive functions
         globals::ex_allocate_pool2 = reinterpret_cast<function_types::ex_allocate_pool2_t>(local_offsets.ExAllocatePool2);
         globals::ex_free_pool_with_tag = reinterpret_cast<function_types::ex_free_pool_with_tag_t>(local_offsets.ExFreePoolWithTag);
         globals::ex_get_previous_mode = reinterpret_cast<function_types::ex_get_previous_mode_t>(local_offsets.ExGetPreviousMode);
+
+        globals::ke_balance_set_manager = local_offsets.KeBalanceSetManager;
+        globals::ke_raise_irql_to_dpc_level = reinterpret_cast<function_types::ke_raise_irql_to_dpc_level_t>(local_offsets.KeRaiseIrqlToDpcLevel);
+        globals::ke_lower_irql = reinterpret_cast<function_types::ke_lower_irql_t>(local_offsets.KeLowerIrql);
+        globals::ki_process_list_head = reinterpret_cast<PLIST_ENTRY>(local_offsets.KiProcessListHead);
+        globals::ki_page_fault = local_offsets.KiPageFault;
 
         // assign runtime library functions
         globals::rtl_init_ansi_string = reinterpret_cast<function_types::rtl_init_ansi_string_t>(local_offsets.RtlInitAnsiString);
@@ -109,6 +135,12 @@ namespace init
         globals::rtl_compare_unicode_string = reinterpret_cast<function_types::rtl_compare_unicode_string_t>(local_offsets.RtlCompareUnicodeString);
         globals::rtl_free_unicode_string = reinterpret_cast<function_types::rtl_free_unicode_string_t>(local_offsets.RtlFreeUnicodeString);
         globals::rtl_get_version = reinterpret_cast<function_types::rtl_get_version_t>(local_offsets.RtlGetVersion);
+        globals::rtl_create_user_thread = reinterpret_cast<function_types::rtl_create_user_thread_t>(local_offsets.RtlCreateUserThread);
+
+        // zw/nt functions
+        globals::zw_open_process = reinterpret_cast<function_types::zw_open_process_t>(local_offsets.ZwOpenProcess);
+        globals::zw_close = reinterpret_cast<function_types::zw_close_t>(local_offsets.ZwClose);
+        globals::zw_wait_for_single_object = reinterpret_cast<function_types::zw_wait_for_single_object_t>(local_offsets.ZwWaitForSingleObject);
 
         // assign crt functions
         globals::memcpy = reinterpret_cast<function_types::memcpy_t>(local_offsets.memcpy);
@@ -116,9 +148,19 @@ namespace init
         globals::memcmp = reinterpret_cast<function_types::memcmp_t>(local_offsets.memcmp);
         globals::strncmp = reinterpret_cast<function_types::strncmp_t>(local_offsets.strncmp);
         globals::strlen = reinterpret_cast<function_types::strlen_t>(local_offsets.strlen);
+        globals::_wcsicmp = reinterpret_cast<function_types::_wcsicmp_t>(local_offsets._wcsicmp);
         
         // assign struct offsets
         globals::active_process_links = local_offsets.ActiveProcessLinks;
+        globals::_eprocess_thread_list_head = local_offsets._EPROCESS_ThreadListHead;
+        globals::_kprocess_thread_list_head = local_offsets._KPROCESS_ThreadListHead;
+        globals::_eprocess_shared_commit_links = local_offsets._EPROCESS_SharedCommitLinks;
+        globals::_eprocess_shared_commit_charge = local_offsets._EPROCESS_SharedCommitCharge;
+        globals::_eprocess_rundown_protect = local_offsets._EPROCESS_RundownProtect;
+        globals::_eprocess_vm = local_offsets._EPROCESS_Vm;
+        globals::_eprocess_flags3 = local_offsets._EPROCESS_Flags3;
+
+
 
 
         globals::hook_address = scan(
@@ -168,6 +210,8 @@ namespace init
         return STATUS_SUCCESS;
     }
 
+    // ok gotta add large page support here 
+
     auto hide_driver_pages(const uintptr_t address, const uintptr_t size) -> NTSTATUS
     {
         log("INFO", "starting to hide pages at address 0x%llx with size 0x%llx", address, size);
@@ -188,7 +232,7 @@ namespace init
         uint64_t last_pdpte_index = ~0ull;
         uint64_t last_pde_index = ~0ull;
 
-        for (uintptr_t current_addr = address; current_addr < address + size; current_addr += PAGE_SIZE) { // PAGE_SIZE
+        for (uintptr_t current_addr = address; current_addr < address + size; current_addr += PAGE_SIZE) {
             // calculate current indices
             const uint64_t pml4e_index = (current_addr >> 39) & 0x1FF;
             const uint64_t pdpte_index = (current_addr >> 30) & 0x1FF;
@@ -204,12 +248,8 @@ namespace init
                 PHYSICAL_ADDRESS pml4e_physical;
                 pml4e_physical.QuadPart = static_cast<LONGLONG>(page_info.PML4E->PageFrameNumber) << PAGE_SHIFT;
                 if (pml4e_physical.QuadPart) {
-                    NTSTATUS status = globals::mm_mark_physical_memory_as_bad(&pml4e_physical, &number_of_bytes);
-                    if (!NT_SUCCESS(status)) {
-                        log("ERROR", "failed to mark PML4E physical memory at 0x%llx status 0x%X", pml4e_physical.QuadPart, status);
-                        continue;
-                    }
-                    log("INFO", "marked PML4E as bad for address 0x%llx, physical address 0x%llx", current_addr, pml4e_physical.QuadPart);
+                    mem::hide_physical_memory(page_info.PML4E->PageFrameNumber, static_cast<hide_type>(globals::driver_hide_type));
+                    log("INFO", "hidden physical memory for PML4E at address 0x%llx, physical address 0x%llx", current_addr, pml4e_physical.QuadPart);
                     last_pml4e_index = pml4e_index;
                 }
             }
@@ -218,12 +258,8 @@ namespace init
                 PHYSICAL_ADDRESS pdpte_physical;
                 pdpte_physical.QuadPart = static_cast<LONGLONG>(page_info.PDPTE->PageFrameNumber) << PAGE_SHIFT;
                 if (pdpte_physical.QuadPart) {
-                    NTSTATUS status = globals::mm_mark_physical_memory_as_bad(&pdpte_physical, &number_of_bytes);
-                    if (!NT_SUCCESS(status)) {
-                        log("ERROR", "failed to mark PDPTE physical memory at 0x%llx status 0x%X", pdpte_physical.QuadPart, status);
-                        continue;
-                    }
-                    log("INFO", "marked PDPTE as bad for address 0x%llx, physical address 0x%llx", current_addr, pdpte_physical.QuadPart);
+                    mem::hide_physical_memory(page_info.PDPTE->PageFrameNumber, static_cast<hide_type>(globals::driver_hide_type));
+                    log("INFO", "hidden physical memory for PDPTE at address 0x%llx, physical address 0x%llx", current_addr, pdpte_physical.QuadPart);
                     last_pdpte_index = pdpte_index;
                 }
             }
@@ -232,20 +268,8 @@ namespace init
                 PHYSICAL_ADDRESS pde_physical;
                 pde_physical.QuadPart = static_cast<LONGLONG>(page_info.PDE->PageFrameNumber) << PAGE_SHIFT;
                 if (pde_physical.QuadPart) {
-
-                    NTSTATUS status = STATUS_UNSUCCESSFUL;
-                    if (page_info.PDE->LargePage) {
-                        status = globals::mm_mark_physical_memory_as_bad(&pde_physical, &number_of_bytes_large);
-                    }
-                    else {
-                        status = globals::mm_mark_physical_memory_as_bad(&pde_physical, &number_of_bytes);
-                    }
-
-                    if (!NT_SUCCESS(status)) {
-                        log("ERROR", "failed to mark PDE physical memory at 0x%llx status 0x%X", pde_physical.QuadPart, status);
-                        continue;
-                    }
-                    log("INFO", "marked PDE as bad for address 0x%llx, physical address 0x%llx", current_addr, pde_physical.QuadPart);
+                    mem::hide_physical_memory(page_info.PDE->PageFrameNumber, static_cast<hide_type>(globals::driver_hide_type));
+                    log("INFO", "hidden physical memory for PDE at address 0x%llx, physical address 0x%llx", current_addr, pde_physical.QuadPart);
                     last_pde_index = pde_index;
                 }
             }
@@ -254,12 +278,8 @@ namespace init
                 PHYSICAL_ADDRESS pte_physical;
                 pte_physical.QuadPart = static_cast<LONGLONG>(page_info.PTE->PageFrameNumber) << PAGE_SHIFT;
                 if (pte_physical.QuadPart) {
-                    NTSTATUS status = globals::mm_mark_physical_memory_as_bad(&pte_physical, &number_of_bytes);
-                    if (!NT_SUCCESS(status)) {
-                        log("ERROR", "failed to mark PTE physical memory at 0x%llx status 0x%X", pte_physical.QuadPart, status);
-                        continue;
-                    }
-                    log("INFO", "marked PTE as bad for address 0x%llx, physical address 0x%llx", current_addr, pte_physical.QuadPart);
+                    mem::hide_physical_memory(page_info.PTE->PageFrameNumber, static_cast<hide_type>(globals::driver_hide_type));
+                    log("INFO", "hidden physical memory for PTE at address 0x%llx, physical address 0x%llx", current_addr, pte_physical.QuadPart);
                 }
             }
         }

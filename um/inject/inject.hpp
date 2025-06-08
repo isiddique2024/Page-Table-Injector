@@ -9,11 +9,18 @@
 #include <lmcons.h>
 
 class injector_t {
+public:     
+    enum class execution_method {
+    IAT_HOOK,
+    THREAD
+    };
+
 private:
 
     const char* hook_module = "user32.dll";
     const char* hook_function = "GetMessageW";
     const wchar_t* target_module = L"";
+    execution_method exec_method = execution_method::IAT_HOOK;
 
     [[nodiscard]] __forceinline auto get_nt_headers(const std::uintptr_t image_base) const -> IMAGE_NT_HEADERS* {
         const auto dos_header = reinterpret_cast<IMAGE_DOS_HEADER*>(image_base);
@@ -121,8 +128,7 @@ private:
         // calculate final buffer size based on page type
         std::size_t buffer_size;
         if (use_large_pages) {
-            //constexpr size_t LARGE_PAGE_SIZE = 0x200000;
-            constexpr size_t LARGE_PAGE_MASK = LARGE_PAGE_SIZE - 1;
+            constexpr size_t LARGE_PAGE_MASK = nt::LARGE_PAGE_SIZE - 1;
             buffer_size = (total_mapping_size + LARGE_PAGE_MASK) & ~LARGE_PAGE_MASK;
             log("INFO", "original size: %zu bytes, aligned size: %zu bytes", total_mapping_size, buffer_size);
         }
@@ -152,9 +158,8 @@ private:
         // write buffer to target process memory
         if (use_large_pages) {
             // split into 2MB chunks for large pages
-            //constexpr size_t LARGE_PAGE_SIZE = 0x200000;
-            for (size_t offset = 0; offset < buffer_size; offset += LARGE_PAGE_SIZE) {
-                size_t chunk_size = min(LARGE_PAGE_SIZE, buffer_size - offset);
+            for (size_t offset = 0; offset < buffer_size; offset += nt::LARGE_PAGE_SIZE) {
+                size_t chunk_size = min(nt::LARGE_PAGE_SIZE, buffer_size - offset);
                 log("INFO", "writing large page chunk at offset 0x%zx, size: %zu bytes", offset, chunk_size);
 
                 // Write without checking return value
@@ -319,7 +324,7 @@ private:
         return 0;
     }
 
-    bool hijack_via_iat_hook(uint32_t pid, void* alloc_base, DWORD entry_point)
+    bool hijack_via_iat_hook(uint32_t pid, uint32_t tid, void* alloc_base, DWORD entry_point, driver_t::alloc_mode alloc_mode)
     {
 
         std::uint8_t dll_main_shellcode[92] = {
@@ -384,9 +389,9 @@ private:
         }
 
         typedef struct _main_struct {
-            uint32_t status;             
+            uint32_t status;
             std::uintptr_t fn_dll_main;
-            HINSTANCE dll_base;    
+            HINSTANCE dll_base;
         } main_struct, * pmain_struct;
 
         DWORD shell_size = sizeof(dll_main_shellcode) + sizeof(main_struct);
@@ -394,14 +399,18 @@ private:
         const auto remote_shellcode = driver->allocate_independent_pages(
             GetCurrentProcessId(),
             pid,
+            tid,
             0x1000,
             0,
-            driver->alloc_mode::ALLOC_AT_LOW_ADDRESS
+            alloc_mode
         );
 
         if (remote_shellcode == NULL) {
             return false;
         }
+
+        if(alloc_mode == driver->ALLOC_AT_HYPERSPACE)
+            driver->swap_context_to_hyperspace(tid);
 
         void* local_alloc = VirtualAlloc(NULL, shell_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!local_alloc) {
@@ -447,13 +456,39 @@ private:
         return status_check.status == 2; // Return success based on status
     }
 
+    bool execute_via_thread(uint32_t pid, uint32_t tid, void* alloc_base, DWORD entry_point, driver_t::alloc_mode alloc_mode)
+    {
+        log("INFO", "executing DLL via thread creation");
+
+        if (!driver->execute_dll_via_thread(GetCurrentProcessId(), pid, tid, alloc_base, entry_point, alloc_mode)) {
+            log("ERROR", "failed to execute via hyperspace thread");
+            return false;
+        }
+
+        log("SUCCESS", "DLL executed successfully via thread");
+        return true;
+    }
+
+
 public:
+
 
     void set_iat_hook_params(const char* hook_mod, const char* hook_func, const wchar_t* main_module) {
         this->hook_module = hook_mod;
         this->hook_function = hook_func;
         this->target_module = main_module;
     }
+
+    void set_execution_method(execution_method method) {
+        this->exec_method = method;
+        log("INFO", "execution method set to: %s",
+            (method == execution_method::IAT_HOOK) ? "IAT_HOOK" : "THREAD");
+    }
+
+    execution_method get_execution_method() const {
+        return this->exec_method;
+    }
+
 
     [[nodiscard]] __forceinline auto run(const std::uint32_t pid, const std::uint32_t tid, void* buffer, uintptr_t offsets, driver_t::memory_type memory_type, driver_t::alloc_mode alloc_mode) -> bool {
         const auto nt_header = get_nt_headers(reinterpret_cast<std::uintptr_t>(buffer));
@@ -466,13 +501,14 @@ public:
 
         log("SUCCESS", "DLL size 0x%llx", size);
 
-        auto dll_alloc_base = driver->allocate_independent_pages(GetCurrentProcessId(), pid, size, memory_type, alloc_mode); 
+        auto dll_alloc_base = driver->allocate_independent_pages(GetCurrentProcessId(), pid, tid, size, memory_type, alloc_mode); 
         if (!dll_alloc_base) {
             log("ERROR", "invalid base address");
             return false;
         }
 
         log("SUCCESS", "allocated memory at: 0x%llx", reinterpret_cast<std::uintptr_t>(dll_alloc_base));
+
 
         if (!relocate_image(dll_alloc_base, buffer, nt_header)) {
             log("ERROR", "image failed to relocate");
@@ -495,10 +531,22 @@ public:
 
         log("SUCCESS", "resolved mapped sections");
 
-        if (!hijack_via_iat_hook(pid, dll_alloc_base, nt_header->OptionalHeader.AddressOfEntryPoint)) {
-            log("ERROR", "Failed to hijack via iat hook");
+        bool execution_success = false;
+        if (exec_method == execution_method::THREAD) {
+            execution_success = execute_via_thread(pid, tid, dll_alloc_base, nt_header->OptionalHeader.AddressOfEntryPoint, alloc_mode);
+        }
+        else {
+            execution_success = hijack_via_iat_hook(pid, tid, dll_alloc_base, nt_header->OptionalHeader.AddressOfEntryPoint, alloc_mode);
+        }
+
+        if (!execution_success) {
+            log("ERROR", "failed to execute DLL using %s method",
+                (exec_method == execution_method::IAT_HOOK) ? "IAT_HOOK" : "THREAD");
             return false;
         }
+
+        log("SUCCESS", "DLL injection completed successfully using %s method",
+            (exec_method == execution_method::IAT_HOOK) ? "IAT_HOOK" : "THREAD");
 
         return true;
     }

@@ -5,7 +5,7 @@
 
 #define NtCurrentProcess ((HANDLE)(LONG_PTR)-1)
 #define PAGE_SHIFT 12L
-
+#define PFN_TO_PAGE(pfn) ((pfn) << PAGE_SHIFT)
 #define STATUS_SUCCESS 0x00000000
 
 #define BYTES_TO_PAGES(Size)  (((Size) >> PAGE_SHIFT) + \
@@ -14,9 +14,21 @@
 #define VA_SHIFT (63 - 47)
 #define MiGetVirtualAddressMappedByPte(PTE) ((std::uintptr_t)((LONG_PTR)(((LONG_PTR)(PTE) - 0xFFFFF68000000000) << (PAGE_SHIFT + VA_SHIFT - PTE_SHIFT)) >> VA_SHIFT))
 
+
+
+typedef union _PHYSICAL_ADDRESS {
+	struct {
+		ULONG LowPart;
+		LONG HighPart;
+	};
+	LONGLONG QuadPart;
+} PHYSICAL_ADDRESS, * PPHYSICAL_ADDRESS;
+
+
 namespace nt
 {
 	constexpr auto PAGE_SIZE = 0x1000;
+	constexpr auto LARGE_PAGE_SIZE = 0x200000;
 	constexpr auto STATUS_INFO_LENGTH_MISMATCH = 0xC0000004;
 
 	constexpr auto SystemModuleInformation = 11;
@@ -39,7 +51,14 @@ namespace nt
 		HUGE_PAGE
 	};
 
- 
+	enum hide_type {
+		NONE,
+		PFN_EXISTS_BIT,
+		MI_REMOVE_PHYSICAL_MEMORY,
+		SET_PARITY_ERROR,
+		SET_LOCK_BIT,
+	};
+
 	typedef struct _DRIVER_OBJECT
 	{
 		SHORT Type;                                                             //0x0

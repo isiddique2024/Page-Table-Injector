@@ -459,35 +459,35 @@ HANDLE intel_driver::Load() {
 
 	////intel_driver::NullEtwpBootPhase(result); // Stops ETW based process hacker apps like ProcMonX and ProcMonXv2
 
-	//if (intel_driver::CheckForDriverDispatchHook(result) == 2) {
-	//	Log(L"[-] Failed to Verify Driver Dispatch" << std::endl);
-	//	// Crash, Ban, do whatever
-	//	return (HANDLE)(0x5232);
-	//}
+	if (intel_driver::CheckForDriverDispatchHook(result) == 2) {
+		Log(L"[-] Failed to Verify Driver Dispatch" << std::endl);
+		// Crash, Ban, do whatever
+		return (HANDLE)(0x5232);
+	}
 
-	//if (!intel_driver::ClearPiDDBCacheTable(result)) {
-	//	Log(L"[-] Failed to ClearPiDDBCacheTable" << std::endl);
-	//	intel_driver::Unload(result);
-	//	return INVALID_HANDLE_VALUE;
-	//}
+	if (!intel_driver::ClearPiDDBCacheTable(result)) {
+		Log(L"[-] Failed to ClearPiDDBCacheTable" << std::endl);
+		intel_driver::Unload(result);
+		return INVALID_HANDLE_VALUE;
+	}
 
-	//if (!intel_driver::ClearKernelHashBucketList(result)) {
-	//	Log(L"[-] Failed to ClearKernelHashBucketList" << std::endl);
-	//	intel_driver::Unload(result);
-	//	return INVALID_HANDLE_VALUE;
-	//}
+	if (!intel_driver::ClearKernelHashBucketList(result)) {
+		Log(L"[-] Failed to ClearKernelHashBucketList" << std::endl);
+		intel_driver::Unload(result);
+		return INVALID_HANDLE_VALUE;
+	}
 
-	//if (!intel_driver::ClearMmUnloadedDrivers(result)) {
-	//	Log(L"[!] Failed to ClearMmUnloadedDrivers" << std::endl);
-	//	intel_driver::Unload(result);
-	//	return INVALID_HANDLE_VALUE;
-	//}
+	if (!intel_driver::ClearMmUnloadedDrivers(result)) {
+		Log(L"[!] Failed to ClearMmUnloadedDrivers" << std::endl);
+		intel_driver::Unload(result);
+		return INVALID_HANDLE_VALUE;
+	}
 
-	//if (!intel_driver::ClearWdFilterDriverList(result)) {
-	//	Log("[!] Failed to ClearWdFilterDriverList" << std::endl);
-	//	intel_driver::Unload(result);
-	//	return INVALID_HANDLE_VALUE;
-	//}
+	if (!intel_driver::ClearWdFilterDriverList(result)) {
+		Log("[!] Failed to ClearWdFilterDriverList" << std::endl);
+		intel_driver::Unload(result);
+		return INVALID_HANDLE_VALUE;
+	}
 
 	return result;
 }

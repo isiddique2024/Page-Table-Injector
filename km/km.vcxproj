@@ -196,9 +196,19 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="entry.cpp" />
+    <ClCompile Include="hde\hde32.cpp" />
+    <ClCompile Include="hde\hde64.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="hde\hde.h" />
+    <ClInclude Include="hde\hde32.h" />
+    <ClInclude Include="hde\hde64.h" />
+    <ClInclude Include="hde\hde_stdint.h" />
+    <ClInclude Include="hde\table32.h" />
+    <ClInclude Include="hde\table64.h" />
     <ClInclude Include="mem\detection.hpp" />
+    <ClInclude Include="mem\pt_hook.hpp" />
+    <ClInclude Include="mem\hyperspace.hpp" />
     <ClInclude Include="mem\mem.hpp" />
     <ClInclude Include="mem\phys.hpp" />
     <ClInclude Include="mem\page_table.hpp" />
@@ -208,6 +218,9 @@
     <ClInclude Include="def\def.hpp" />
     <ClInclude Include="mem\scan.hpp" />
     <ClInclude Include="utils\utils.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="hde\LICENSE" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

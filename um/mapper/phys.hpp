@@ -1,587 +1,383 @@
-//#pragma once
-//#include <ntstatus.h>
-//
-//// Converted to use intel_driver functions
-//// Based on https://github.com/SamuelTulach/DirectPageManipulation
-//#pragma once
-//#define PFN_TO_PAGE(pfn) ( pfn << 12 )
-//#define PAGE_TO_PFN(pfn) (pfn >> PAGE_SHIFT)
-//#define PAGE_SIZE 0x1000
-//
-//#pragma warning(push)
-//#pragma warning(disable : 4201) // nonstandard extension used: nameless struct/union
-//
-//#pragma pack(push, 1)
-//typedef union CR3_
-//{
-//    ULONG64 Value;
-//    struct
-//    {
-//        ULONG64 Ignored1 : 3;
-//        ULONG64 WriteThrough : 1;
-//        ULONG64 CacheDisable : 1;
-//        ULONG64 Ignored2 : 7;
-//        ULONG64 Pml4 : 40;
-//        ULONG64 Reserved : 12;
-//    };
-//} PTE_CR3;
-//
-//typedef union VIRT_ADDR_
-//{
-//    ULONG64 Value;
-//    void* Pointer;
-//    struct
-//    {
-//        ULONG64 Offset : 12;
-//        ULONG64 PtIndex : 9;
-//        ULONG64 PdIndex : 9;
-//        ULONG64 PdptIndex : 9;
-//        ULONG64 Pml4Index : 9;
-//        ULONG64 Reserved : 16;
-//    };
-//} VIRTUAL_ADDRESS;
-//
-//typedef union PML4E_
-//{
-//    ULONG64 Value;
-//    struct
-//    {
-//        ULONG64 Present : 1;
-//        ULONG64 Rw : 1;
-//        ULONG64 User : 1;
-//        ULONG64 WriteThrough : 1;
-//        ULONG64 CacheDisable : 1;
-//        ULONG64 Accessed : 1;
-//        ULONG64 Ignored1 : 1;
-//        ULONG64 Reserved1 : 1;
-//        ULONG64 Ignored2 : 4;
-//        ULONG64 Pdpt : 40;
-//        ULONG64 Ignored3 : 11;
-//        ULONG64 Xd : 1;
-//    };
-//} PML4E_NEW;
-//
-//typedef union PDPTE_
-//{
-//    ULONG64 Value;
-//    struct
-//    {
-//        ULONG64 Present : 1;
-//        ULONG64 Rw : 1;
-//        ULONG64 User : 1;
-//        ULONG64 WriteThrough : 1;
-//        ULONG64 CacheDisable : 1;
-//        ULONG64 Accessed : 1;
-//        ULONG64 Dirty : 1;
-//        ULONG64 PageSize : 1;
-//        ULONG64 Ignored2 : 4;
-//        ULONG64 Pd : 40;
-//        ULONG64 Ignored3 : 11;
-//        ULONG64 Xd : 1;
-//    };
-//} PDPTE_NEW;
-//
-//typedef union PDE_
-//{
-//    ULONG64 Value;
-//    struct
-//    {
-//        ULONG64 Present : 1;
-//        ULONG64 Rw : 1;
-//        ULONG64 User : 1;
-//        ULONG64 WriteThrough : 1;
-//        ULONG64 CacheDisable : 1;
-//        ULONG64 Accessed : 1;
-//        ULONG64 Dirty : 1;
-//        ULONG64 PageSize : 1;
-//        ULONG64 Ignored2 : 4;
-//        ULONG64 Pt : 40;
-//        ULONG64 Ignored3 : 11;
-//        ULONG64 Xd : 1;
-//    };
-//} PDE_NEW;
-//
-//typedef union PTE_
-//{
-//    ULONG64 Value;
-//    VIRTUAL_ADDRESS VirtualAddress;
-//    struct
-//    {
-//        ULONG64 Present : 1;
-//        ULONG64 Rw : 1;
-//        ULONG64 User : 1;
-//        ULONG64 WriteThrough : 1;
-//        ULONG64 CacheDisable : 1;
-//        ULONG64 Accessed : 1;
-//        ULONG64 Dirty : 1;
-//        ULONG64 Pat : 1;
-//        ULONG64 Global : 1;
-//        ULONG64 Ignored1 : 3;
-//        ULONG64 PageFrame : 40;
-//        ULONG64 Ignored3 : 11;
-//        ULONG64 Xd : 1;
-//    };
-//} PTE_NEW;
-//#pragma pack(pop)
-//
-//#pragma warning(pop)
-//
-//namespace physical {
-//    inline PTE_64* main_page_entry;
-//    inline void* main_virtual_address;
-//    inline HANDLE driver_handle;
-//
-//    // Helper function to get PEPROCESS from PID via kernel
-//    uintptr_t get_peprocess_from_pid(HANDLE device_handle, DWORD process_id) {
-//        static uint64_t kernel_PsLookupProcessByProcessId = intel_driver::GetKernelModuleExport(device_handle, intel_driver::ntoskrnlAddr, "PsLookupProcessByProcessId");
-//        if (!kernel_PsLookupProcessByProcessId) {
-//            return 0;
-//        }
-//
-//        uintptr_t process_object = 0;
-//        NTSTATUS status = 0;
-//
-//        if (!intel_driver::CallKernelFunction(device_handle, &status, kernel_PsLookupProcessByProcessId,
-//            reinterpret_cast<HANDLE>(static_cast<uintptr_t>(process_id)), &process_object)) {
-//            return 0;
-//        }
-//
-//        if (!NT_SUCCESS(status)) {
-//            return 0;
-//        }
-//
-//        return process_object;
-//    }
-//
-//    //// Helper to dereference the process object when done
-//    //void dereference_process(HANDLE device_handle, uintptr_t process_object) {
-//    //    void* test = 0;
-//    //    static uint64_t kernel_ObfDereferenceObject = intel_driver::GetKernelModuleExport(device_handle, intel_driver::ntoskrnlAddr, "ObfDereferenceObject");
-//    //    if (kernel_ObfDereferenceObject) {
-//    //        intel_driver::CallKernelFunction(device_handle, , kernel_ObfDereferenceObject, reinterpret_cast<void*>(process_object));
-//    //    }
-//    //}
-//
-//    void* physical_to_virtual(HANDLE device_handle, const uintptr_t address)
-//    {
-//        PHYSICAL_ADDRESS physical{};
-//        physical.QuadPart = address;
-//
-//        static uint64_t kernel_MmGetVirtualForPhysical = intel_driver::GetKernelModuleExport(device_handle, intel_driver::ntoskrnlAddr, "MmGetVirtualForPhysical");
-//        if (!kernel_MmGetVirtualForPhysical) {
-//            return nullptr;
-//        }
-//
-//        void* virtual_addr = nullptr;
-//        if (!intel_driver::CallKernelFunction(device_handle, &virtual_addr, kernel_MmGetVirtualForPhysical, physical)) {
-//            return nullptr;
-//        }
-//
-//        return virtual_addr;
-//    }
-//
-//
-//    NTSTATUS init(HANDLE device_handle)
-//    {
-//        driver_handle = device_handle;
-//
-//        // Allocate main virtual address using AllocIndependentPages
-//        uintptr_t allocated_addr = kdmapper::AllocIndependentPages(device_handle, PAGE_SIZE);
-//        if (!allocated_addr) {
-//            return STATUS_INSUFFICIENT_RESOURCES;
-//        }
-//
-//        main_virtual_address = reinterpret_cast<void*>(allocated_addr);
-//
-//        VIRTUAL_ADDRESS virtual_address{};
-//        virtual_address.Pointer = main_virtual_address;
-//
-//        // Get CR3 from current process
-//        uintptr_t cr3 = GetCurrentProcessCR3(device_handle);
-//        if (!cr3) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        PTE_CR3 cr3_struct;
-//        cr3_struct.Pml4 = cr3;
-//
-//        auto pml4_physical = PFN_TO_PAGE(cr3_struct.Pml4);
-//        auto* pml4_virtual = static_cast<PML4E_64*>(physical_to_virtual(device_handle, pml4_physical));
-//        if (!pml4_virtual) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        PML4E_64 pml4e;
-//        if (!intel_driver::ReadMemory(device_handle,
-//            reinterpret_cast<uintptr_t>(pml4_virtual) + (virtual_address.Pml4Index * sizeof(PML4E_64)),
-//            &pml4e, sizeof(PML4E_64))) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        if (!pml4e.Present) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        auto pdpt_physical = PFN_TO_PAGE(pml4e.PageFrameNumber);
-//        auto* pdpt_virtual = static_cast<PDPTE_64*>(physical_to_virtual(device_handle, pdpt_physical));
-//        if (!pdpt_virtual) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        PDPTE_64 pdpte;
-//        if (!intel_driver::ReadMemory(device_handle,
-//            reinterpret_cast<uintptr_t>(pdpt_virtual) + (virtual_address.PdptIndex * sizeof(PDPTE_64)),
-//            &pdpte, sizeof(PDPTE_64))) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        if (!pdpte.Present) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        // sanity check 1GB page
-//        if (pdpte.LargePage) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_INVALID_PARAMETER;
-//        }
-//
-//        auto pd_physical = PFN_TO_PAGE(pdpte.PageFrameNumber);
-//        auto* pd_virtual = static_cast<PDE_64*>(physical_to_virtual(device_handle, pd_physical));
-//        if (!pd_virtual) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        PDE_64 pde;
-//        if (!intel_driver::ReadMemory(device_handle,
-//            reinterpret_cast<uintptr_t>(pd_virtual) + (virtual_address.PdIndex * sizeof(PDE_64)),
-//            &pde, sizeof(PDE_64))) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        if (!pde.Present) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        // sanity check 2MB page
-//        if (pde.LargePage) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_INVALID_PARAMETER;
-//        }
-//
-//        auto pt_physical = PFN_TO_PAGE(pde.PageFrameNumber);
-//        auto* pt_virtual = static_cast<PTE_64*>(physical_to_virtual(device_handle, pt_physical));
-//        if (!pt_virtual) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        PTE_64 pte;
-//        uintptr_t pte_address = reinterpret_cast<uintptr_t>(pt_virtual) + (virtual_address.PtIndex * sizeof(PTE_64));
-//        if (!intel_driver::ReadMemory(device_handle, pte_address, &pte, sizeof(PTE_64))) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        if (!pte.Present) {
-//            intel_driver::MmFreeIndependentPages(device_handle, allocated_addr, PAGE_SIZE);
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        // Store the PTE address for later manipulation
-//        main_page_entry = reinterpret_cast<PTE_64*>(pte_address);
-//
-//        return STATUS_SUCCESS;
-//    }
-//
-//    PVOID overwrite_page(HANDLE device_handle, const uintptr_t physical_address)
-//    {
-//        // page boundary checks are done by Read/WriteProcessMemory
-//        // and page entries are not spread over different pages
-//        const unsigned long page_offset = physical_address % 0x1000;
-//        const uintptr_t page_start_physical = physical_address - page_offset;
-//
-//        PTE_64 new_pte;
-//        if (!intel_driver::ReadMemory(device_handle, reinterpret_cast<uintptr_t>(main_page_entry), &new_pte, sizeof(PTE_64))) {
-//            return nullptr;
-//        }
-//
-//        new_pte.PageFrameNumber = PAGE_TO_PFN(page_start_physical);
-//
-//        if (!intel_driver::WriteMemory(device_handle, reinterpret_cast<uintptr_t>(main_page_entry), &new_pte, sizeof(PTE_64))) {
-//            return nullptr;
-//        }
-//
-//        //// Invalidate TLB for this page
-//        //static uint64_t kernel_invlpg = intel_driver::GetKernelModuleExport(device_handle, intel_driver::ntoskrnlAddr, "__invlpg");
-//        //if (kernel_invlpg) {
-//        //    intel_driver::CallKernelFunction(device_handle, nullptr, kernel_invlpg, main_virtual_address);
-//        //}
-//
-//        return reinterpret_cast<PVOID>(reinterpret_cast<uintptr_t>(main_virtual_address) + page_offset);
-//    }
-//
-//    NTSTATUS read_physical_address(HANDLE device_handle, const uintptr_t target_address, void* buffer, const size_t size)
-//    {
-//        const auto virtual_address = overwrite_page(device_handle, target_address);
-//        if (!virtual_address) {
-//            return STATUS_UNSUCCESSFUL;
-//        }
-//
-//        if (!intel_driver::ReadMemory(device_handle, reinterpret_cast<uintptr_t>(virtual_address), buffer, size)) {
-//            return STATUS_UNSUCCESSFUL;
-//        }
-//
-//        return STATUS_SUCCESS;
-//    }
-//
-//    NTSTATUS write_physical_address(HANDLE device_handle, const uintptr_t target_address, const void* buffer, const size_t size)
-//    {
-//        const auto virtual_address = overwrite_page(device_handle, target_address);
-//        if (!virtual_address) {
-//            return STATUS_UNSUCCESSFUL;
-//        }
-//
-//        if (!intel_driver::WriteMemory(device_handle, reinterpret_cast<uintptr_t>(virtual_address), const_cast<void*>(buffer), size)) {
-//            return STATUS_UNSUCCESSFUL;
-//        }
-//
-//        return STATUS_SUCCESS;
-//    }
-//
-//#define PAGE_OFFSET_SIZE 12
-//    static constexpr uintptr_t PMASK = (~0xfull << 8) & 0xFFFFFFFFFFF000;
-//
-//    uintptr_t translate_linear_address(HANDLE device_handle, uintptr_t directory_table_base, const uintptr_t virtual_address)
-//    {
-//        directory_table_base &= ~0xf;
-//
-//        const uintptr_t page_offset = virtual_address & ~(~0ul << PAGE_OFFSET_SIZE);
-//        const uintptr_t pte = ((virtual_address >> 12) & (0x1ffll));
-//        const uintptr_t pt = ((virtual_address >> 21) & (0x1ffll));
-//        const uintptr_t pd = ((virtual_address >> 30) & (0x1ffll));
-//        const uintptr_t pdp = ((virtual_address >> 39) & (0x1ffll));
-//
-//        uintptr_t pdpe = 0;
-//        if (!NT_SUCCESS(read_physical_address(device_handle, directory_table_base + 8 * pdp, &pdpe, sizeof(pdpe)))) {
-//            return 0;
-//        }
-//        if (~pdpe & 1)
-//            return 0;
-//
-//        uintptr_t pde = 0;
-//        if (!NT_SUCCESS(read_physical_address(device_handle, (pdpe & PMASK) + 8 * pd, &pde, sizeof(pde)))) {
-//            return 0;
-//        }
-//        if (~pde & 1)
-//            return 0;
-//
-//        // 1GB large page, use pde's 12-34 bits
-//        if (pde & 0x80)
-//            return (pde & (~0ull << 42 >> 12)) + (virtual_address & ~(~0ull << 30));
-//
-//        uintptr_t pte_addr = 0;
-//        if (!NT_SUCCESS(read_physical_address(device_handle, (pde & PMASK) + 8 * pt, &pte_addr, sizeof(pte_addr)))) {
-//            return 0;
-//        }
-//        if (~pte_addr & 1)
-//            return 0;
-//
-//        // 2MB large page
-//        if (pte_addr & 0x80)
-//            return (pte_addr & PMASK) + (virtual_address & ~(~0ull << 21));
-//
-//        uintptr_t result_address = 0;
-//        if (!NT_SUCCESS(read_physical_address(device_handle, (pte_addr & PMASK) + 8 * pte, &result_address, sizeof(result_address)))) {
-//            return 0;
-//        }
-//        result_address &= PMASK;
-//
-//        if (!result_address)
-//            return 0;
-//
-//        return result_address + page_offset;
-//    }
-//
-//    uintptr_t get_process_directory_base(HANDLE device_handle, DWORD process_id)
-//    {
-//        uintptr_t process_object = get_peprocess_from_pid(device_handle, process_id);
-//        if (!process_object) {
-//            return 0;
-//        }
-//
-//        uintptr_t dir_base = 0;
-//        if (!intel_driver::ReadMemory(device_handle, process_object + 0x28, &dir_base, sizeof(uintptr_t))) {
-//            //dereference_process(device_handle, process_object);
-//            return 0;
-//        }
-//
-//        if (!dir_base) {
-//            uintptr_t user_dir_base = 0;
-//            if (!intel_driver::ReadMemory(device_handle, process_object + 0x388, &user_dir_base, sizeof(uintptr_t))) {
-//                //dereference_process(device_handle, process_object);
-//                return 0;
-//            }
-//            //dereference_process(device_handle, process_object);
-//            return user_dir_base;
-//        }
-//
-//        //dereference_process(device_handle, process_object);
-//        return dir_base;
-//    }
-//
-//    NTSTATUS read_process_memory(HANDLE device_handle, DWORD process_id, const uintptr_t address, void* buffer, const size_t size)
-//    {
-//        if (!address)
-//            return STATUS_INVALID_PARAMETER;
-//
-//        const auto process_dir_base = get_process_directory_base(device_handle, process_id);
-//        if (!process_dir_base) {
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        size_t current_offset = 0;
-//        size_t total_size = size;
-//
-//        while (total_size)
-//        {
-//            const auto current_physical_address = translate_linear_address(device_handle, process_dir_base, address + current_offset);
-//            if (!current_physical_address)
-//                return STATUS_NOT_FOUND;
-//
-//            const auto read_size = min(PAGE_SIZE - (current_physical_address & 0xFFF), total_size);
-//            const auto status = read_physical_address(
-//                device_handle,
-//                current_physical_address,
-//                reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(buffer) + current_offset),
-//                read_size
-//            );
-//
-//            if (!NT_SUCCESS(status) || !read_size)
-//                return status;
-//
-//            total_size -= read_size;
-//            current_offset += read_size;
-//        }
-//
-//        return STATUS_SUCCESS;
-//    }
-//
-//    NTSTATUS write_process_memory(HANDLE device_handle, DWORD process_id, const uintptr_t address, const void* buffer, const size_t size)
-//    {
-//        if (!address)
-//            return STATUS_INVALID_PARAMETER;
-//
-//        const auto process_dir_base = get_process_directory_base(device_handle, process_id);
-//        if (!process_dir_base) {
-//            return STATUS_NOT_FOUND;
-//        }
-//
-//        size_t current_offset = 0;
-//        size_t total_size = size;
-//
-//        while (total_size)
-//        {
-//            const auto current_physical_address = translate_linear_address(device_handle, process_dir_base, address + current_offset);
-//            if (!current_physical_address)
-//                return STATUS_NOT_FOUND;
-//
-//            const auto write_size = min(PAGE_SIZE - (current_physical_address & 0xFFF), total_size);
-//            const auto status = write_physical_address(
-//                device_handle,
-//                current_physical_address,
-//                reinterpret_cast<PVOID>(reinterpret_cast<uintptr_t>(buffer) + current_offset),
-//                write_size
-//            );
-//
-//            if (!NT_SUCCESS(status) || !write_size)
-//                return status;
-//
-//            total_size -= write_size;
-//            current_offset += write_size;
-//        }
-//
-//        return STATUS_SUCCESS;
-//    }
-//
-//    // Usermode compatible process finder that returns PID
-//    DWORD find_process_by_name(const wchar_t* process_name) {
-//        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-//        if (snapshot == INVALID_HANDLE_VALUE) {
-//            return 0;
-//        }
-//
-//        PROCESSENTRY32W entry;
-//        entry.dwSize = sizeof(entry);
-//
-//        if (Process32FirstW(snapshot, &entry)) {
-//            do {
-//                if (_wcsicmp(entry.szExeFile, process_name) == 0) {
-//                    CloseHandle(snapshot);
-//                    return entry.th32ProcessID;
-//                }
-//            } while (Process32NextW(snapshot, &entry));
-//        }
-//
-//        CloseHandle(snapshot);
-//        return 0;
-//    }
-//
-//    // Alternative: Find process and get module base
-//    struct ProcessInfo {
-//        DWORD pid;
-//        uintptr_t module_base;
-//    };
-//
-//    ProcessInfo find_process_with_module(HANDLE device_handle, const wchar_t* process_name) {
-//        ProcessInfo result = { 0, 0 };
-//
-//        // First find the PID using standard usermode API
-//        result.pid = find_process_by_name(process_name);
-//        if (!result.pid) {
-//            return result;
-//        }
-//
-//        // Get process object from PID
-//        uintptr_t process_object = get_peprocess_from_pid(device_handle, result.pid);
-//        if (!process_object) {
-//            result.pid = 0;
-//            return result;
-//        }
-//
-//        // Get PEB address
-//        static uint64_t kernel_PsGetProcessPeb = intel_driver::GetKernelModuleExport(device_handle, intel_driver::ntoskrnlAddr, "PsGetProcessPeb");
-//        if (!kernel_PsGetProcessPeb) {
-//            //dereference_process(device_handle, process_object);
-//            result.pid = 0;
-//            return result;
-//        }
-//
-//        uintptr_t peb_address = 0;
-//        if (!intel_driver::CallKernelFunction(device_handle, &peb_address, kernel_PsGetProcessPeb, reinterpret_cast<void*>(process_object))) {
-//            //dereference_process(device_handle, process_object);
-//            result.pid = 0;
-//            return result;
-//        }
-//
-//        // Read PEB to get image base
-//        if (peb_address) {
-//            // PEB.ImageBaseAddress is at offset +0x10
-//            if (!read_process_memory(device_handle, result.pid, peb_address + 0x10, &result.module_base, sizeof(uintptr_t))) {
-//                result.module_base = 0;
-//            }
-//        }
-//
-//        //dereference_process(device_handle, process_object);
-//        return result;
-//    }
-//}
+#pragma once
+
+// page table helper functions
+namespace page_table {
+	uintptr_t get_pml4e(uint32_t pml4_idx) {
+		return static_cast<uintptr_t>(pml4_idx) << 39;
+	}
+
+	uintptr_t get_pdpt(uint32_t pdpt_idx) {
+		return static_cast<uintptr_t>(pdpt_idx) << 30;
+	}
+
+	uintptr_t get_pd(uint32_t pd_idx) {
+		return static_cast<uintptr_t>(pd_idx) << 21;
+	}
+
+	uintptr_t get_pt(uint32_t pt_idx) {
+		return static_cast<uintptr_t>(pt_idx) << 12;
+	}
+
+	// convert physical address to virtual for reading/writing
+	uintptr_t physical_to_virtual(HANDLE device_handle, uintptr_t physical_address) {
+		static uint64_t kernel_MmGetVirtualForPhysical = intel_driver::GetKernelModuleExport(device_handle, intel_driver::ntoskrnlAddr, "MmGetVirtualForPhysical");
+		if (!kernel_MmGetVirtualForPhysical) {
+			Log(L"[-] Failed to find MmGetVirtualForPhysical" << std::endl);
+			return 0;
+		}
+
+		PHYSICAL_ADDRESS phys_addr;
+		phys_addr.QuadPart = physical_address;
+
+		uintptr_t virtual_address = 0;
+		intel_driver::CallKernelFunction(device_handle, &virtual_address, kernel_MmGetVirtualForPhysical, phys_addr);
+
+		return virtual_address;
+	}
+
+	bool read_physical_address(HANDLE device_handle, uintptr_t physical_address, void* buffer, size_t size) {
+		uintptr_t virtual_address = physical_to_virtual(device_handle, physical_address);
+		if (!virtual_address) {
+			Log(L"[-] Failed to get virtual address for physical: 0x" << std::hex << physical_address << std::endl);
+			return false;
+		}
+
+		return intel_driver::ReadMemory(device_handle, virtual_address, buffer, size);
+	}
+
+	// write to physical address
+	bool write_physical_address(HANDLE device_handle, uintptr_t physical_address, void* buffer, size_t size) {
+		uintptr_t virtual_address = physical_to_virtual(device_handle, physical_address);
+		if (!virtual_address) {
+			Log(L"[-] Failed to get virtual address for physical: 0x" << std::hex << physical_address << std::endl);
+			return false;
+		}
+
+		return intel_driver::WriteMemory(device_handle, virtual_address, buffer, size);
+	}
+
+	NTSTATUS write_page_tables(HANDLE device_handle, uintptr_t target_dir_base, uintptr_t base_va, size_t page_count, bool use_large_page) {
+
+		for (size_t i = 0; i < page_count; ++i) {
+			const auto current_va = base_va + i * (use_large_page ? nt::LARGE_PAGE_SIZE : nt::PAGE_SIZE);
+			ADDRESS_TRANSLATION_HELPER helper;
+			helper.AsUInt64 = current_va;
+
+			uintptr_t actual_page_va = 0;
+			if (use_large_page) {
+				// for large pages, we need contiguous memory
+				actual_page_va = reinterpret_cast<uintptr_t>(kdmapper::AllocContiguousMemory(device_handle, nt::LARGE_PAGE_SIZE));
+			}
+			else {
+				actual_page_va = reinterpret_cast<uintptr_t>(VirtualAlloc(NULL, nt::PAGE_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
+				//actual_page_va = kdmapper::AllocIndependentPages(device_handle, nt::PAGE_SIZE);
+			}
+
+			if (!actual_page_va) {
+				Log(L"[-] Failed to allocate actual page" << std::endl);
+				return STATUS_NO_MEMORY;
+			}
+
+			// clear the allocated page
+			static uint64_t kernel_RtlZeroMemory = intel_driver::GetKernelModuleExport(device_handle, intel_driver::ntoskrnlAddr, "RtlZeroMemory");
+			if (kernel_RtlZeroMemory) {
+				intel_driver::CallKernelFunction<void>(device_handle, nullptr, kernel_RtlZeroMemory,
+					reinterpret_cast<void*>(actual_page_va), use_large_page ? nt::LARGE_PAGE_SIZE : nt::PAGE_SIZE);
+			}
+
+			uintptr_t page_frame_number = 0;
+
+			// get page table entry address
+			auto pte_va = use_large_page ?
+				intel_driver::MiGetPdeAddress(device_handle, actual_page_va) :
+				intel_driver::MiGetPteAddress(device_handle, actual_page_va);
+
+			if (!pte_va) {
+				Log(L"[-] Failed to get page table entry address" << std::endl);
+				return STATUS_UNSUCCESSFUL;
+			}
+
+			// both PTE and PDE have PageFrameNumber in the same position, so we can use either
+			PTE_64 entry = { 0 };
+			if (!intel_driver::ReadMemory(device_handle, pte_va, &entry, use_large_page ? sizeof(PDE_64) : sizeof(PTE_64))) {
+				Log(L"[-] Failed to read " << (use_large_page ? L"PDE" : L"PTE") << std::endl);
+				return STATUS_UNSUCCESSFUL;
+			}
+
+			page_frame_number = entry.PageFrameNumber;
+			if (!page_frame_number) {
+				Log(L"[-] PFN is null" << std::endl);
+				return STATUS_UNSUCCESSFUL;
+			}
+
+			uintptr_t pml4_phys = target_dir_base;
+			PML4E_64 pml4e = { 0 };
+
+			// read and setup PML4E
+			if (!read_physical_address(device_handle, pml4_phys + helper.AsIndex.Pml4 * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64))) {
+				Log(L"[-] Failed to read PML4E" << std::endl);
+				return STATUS_UNSUCCESSFUL;
+			}
+
+			if (!pml4e.Present) {
+				auto pdpt_va = kdmapper::AllocIndependentPages(device_handle, nt::PAGE_SIZE);
+				if (!pdpt_va) {
+					Log(L"[-] Failed to allocate pdpt" << std::endl);
+					return STATUS_NO_MEMORY;
+				}
+
+				// clear PDPT
+				if (kernel_RtlZeroMemory) {
+					intel_driver::CallKernelFunction<void>(device_handle, nullptr, kernel_RtlZeroMemory,
+						reinterpret_cast<void*>(pdpt_va), nt::PAGE_SIZE);
+				}
+
+				// get physical address of PDPT
+				uintptr_t pdpt_pte_va = intel_driver::MiGetPteAddress(device_handle, pdpt_va);
+				if (!pdpt_pte_va) {
+					Log(L"[-] Failed to get PTE address for PDPT" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+
+				PTE_64 pdpt_pte = { 0 };
+				if (!intel_driver::ReadMemory(device_handle, pdpt_pte_va, &pdpt_pte, sizeof(PTE_64))) {
+					Log(L"[-] Failed to read PTE for PDPT" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+
+				pml4e.Flags = 0;
+				pml4e.Present = 1;
+				pml4e.Write = 1;
+				pml4e.Supervisor = 0;
+				pml4e.PageFrameNumber = pdpt_pte.PageFrameNumber;
+
+				if (!write_physical_address(device_handle, pml4_phys + helper.AsIndex.Pml4 * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64))) {
+					Log(L"[-] Failed to write PML4E" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+			}
+
+			// read and setup PDPT
+			PDPTE_64 pdpte = { 0 };
+			if (!read_physical_address(device_handle, PFN_TO_PAGE(pml4e.PageFrameNumber) + helper.AsIndex.Pdpt * sizeof(PDPTE_64), &pdpte, sizeof(PDPTE_64))) {
+				Log(L"[-] Failed to read PDPTE" << std::endl);
+				return STATUS_UNSUCCESSFUL;
+			}
+
+			if (!pdpte.Present) {
+				auto pd_va = kdmapper::AllocIndependentPages(device_handle, nt::PAGE_SIZE);
+				if (!pd_va) {
+					Log(L"[-] Failed to allocate pd" << std::endl);
+					return STATUS_NO_MEMORY;
+				}
+
+				// clear PD
+				if (kernel_RtlZeroMemory) {
+					intel_driver::CallKernelFunction<void>(device_handle, nullptr, kernel_RtlZeroMemory,
+						reinterpret_cast<void*>(pd_va), nt::PAGE_SIZE);
+				}
+
+				// get physical address of PD
+				uintptr_t pd_pte_va = intel_driver::MiGetPteAddress(device_handle, pd_va);
+				if (!pd_pte_va) {
+					Log(L"[-] Failed to get PTE address for PD" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+
+				PTE_64 pd_pte = { 0 };
+				if (!intel_driver::ReadMemory(device_handle, pd_pte_va, &pd_pte, sizeof(PTE_64))) {
+					Log(L"[-] Failed to read PTE for PD" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+
+				pdpte.Flags = 0;
+				pdpte.Present = 1;
+				pdpte.Write = 1;
+				pdpte.Supervisor = 0;
+				pdpte.PageFrameNumber = pd_pte.PageFrameNumber;
+
+				if (!write_physical_address(device_handle, PFN_TO_PAGE(pml4e.PageFrameNumber) + helper.AsIndex.Pdpt * sizeof(PDPTE_64), &pdpte, sizeof(PDPTE_64))) {
+					Log(L"[-] Failed to write PDPTE" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+			}
+
+			if (use_large_page) {
+				// read and setup PD for large page
+				PDE_64 pde = { 0 };
+				if (!read_physical_address(device_handle, PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64))) {
+					Log(L"[-] Failed to read PDE" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+
+				if (!pde.Present) {
+					pde.Flags = 0;
+					pde.Present = 1;
+					pde.Write = 1;
+					pde.Supervisor = 0;
+					pde.LargePage = 1;
+					pde.ExecuteDisable = 0;
+					pde.PageFrameNumber = page_frame_number;
+
+					if (!write_physical_address(device_handle, PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64))) {
+						Log(L"[-] Failed to write PDE" << std::endl);
+						return STATUS_UNSUCCESSFUL;
+					}
+				}
+			}
+			else {
+				// read and setup PD for regular page
+				PDE_64 pde = { 0 };
+				if (!read_physical_address(device_handle, PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64))) {
+					Log(L"[-] Failed to read PDE" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+
+				if (!pde.Present) {
+					auto pt_va = kdmapper::AllocIndependentPages(device_handle, nt::PAGE_SIZE);
+					if (!pt_va) {
+						Log(L"ERROR: failed to allocate pt" << std::endl);
+						return STATUS_NO_MEMORY;
+					}
+
+					// clear PT
+					if (kernel_RtlZeroMemory) {
+						intel_driver::CallKernelFunction<void>(device_handle, nullptr, kernel_RtlZeroMemory,
+							reinterpret_cast<void*>(pt_va), nt::PAGE_SIZE);
+					}
+
+					// get physical address of PT
+					uintptr_t pt_pte_va = intel_driver::MiGetPteAddress(device_handle, pt_va);
+					if (!pt_pte_va) {
+						Log(L"[-] Failed to get PTE address for PT" << std::endl);
+						return STATUS_UNSUCCESSFUL;
+					}
+
+					PTE_64 pt_pte = { 0 };
+					if (!intel_driver::ReadMemory(device_handle, pt_pte_va, &pt_pte, sizeof(PTE_64))) {
+						Log(L"[-] Failed to read PTE for PT" << std::endl);
+						return STATUS_UNSUCCESSFUL;
+					}
+
+					pde.Flags = 0;
+					pde.Present = 1;
+					pde.Write = 1;
+					pde.Supervisor = 0;
+					pde.PageFrameNumber = pt_pte.PageFrameNumber;
+
+					if (!write_physical_address(device_handle, PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64))) {
+						Log(L"[-] Failed to write PDE" << std::endl);
+						return STATUS_UNSUCCESSFUL;
+					}
+				}
+
+				// setup PTE
+				PTE_64 pte = { 0 };
+				pte.Present = 1;
+				pte.Write = 1;
+				pte.Supervisor = 0;
+				pte.PageFrameNumber = page_frame_number;
+
+				if (!write_physical_address(device_handle, PFN_TO_PAGE(pde.PageFrameNumber) + helper.AsIndex.Pt * sizeof(PTE_64), &pte, sizeof(PTE_64))) {
+					Log(L"[-] Failed to write PTE" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+			}
+
+			Log(L"[+] page " << i << L": va: 0x" << std::hex << current_va << L", pfn: 0x" << page_frame_number << std::endl);
+		}
+
+		return STATUS_SUCCESS;
+	}
+
+	// allocate within current process context within non present pml4 at high address
+	void* allocate_within_current_process_context(HANDLE device_handle, const uint32_t target_pid, const size_t size, const bool use_large_page, const bool use_high_address = true) {
+		// page size constants
+		const size_t page_size = use_large_page ? nt::LARGE_PAGE_SIZE : nt::PAGE_SIZE;
+		const size_t page_mask = page_size - 1;
+		const size_t page_shift = use_large_page ? 21 : 12;
+
+		// align the requested size to page boundaries
+		const size_t aligned_size = (size + page_mask) & ~page_mask;
+		const size_t page_count = aligned_size >> page_shift;
+
+		static uint64_t kernel_PsGetCurrentProcess = intel_driver::GetKernelModuleExport(device_handle, intel_driver::ntoskrnlAddr, "PsGetCurrentProcess");
+
+		if (!kernel_PsGetCurrentProcess) {
+			Log(L"[!] Failed to find PsGetCurrentProcess" << std::endl);
+			return 0;
+		}
+
+		// get current process EPROCESS structure
+		uintptr_t current_process = 0;
+		if (!intel_driver::CallKernelFunction(device_handle, &current_process, kernel_PsGetCurrentProcess)) {
+			return 0;
+		}
+
+		if (!current_process) {
+			return 0;
+		}
+
+		// get directory base (CR3)
+		uintptr_t target_dir_base = 0;
+		if (!intel_driver::ReadMemory(device_handle, current_process + 0x28, &target_dir_base, sizeof(uintptr_t))) {
+			Log(L"[-] Failed to read target process directory base" << std::endl);
+			return nullptr;
+		}
+
+		// find a non-present PML4E in the appropriate address space
+		uint32_t selected_pml4_index = 0;
+		PML4E_64 pml4e = { 0 };
+
+		// set the search range based on whether high or low address is requested
+		uint32_t start_idx = use_high_address ? 256 : 0;
+		uint32_t end_idx = use_high_address ? 511 : 256;
+		const char* space_type = use_high_address ? "kernel" : "usermode";
+
+		bool found = false;
+		for (uint32_t idx = start_idx; idx < end_idx; idx++) {
+			if (read_physical_address(device_handle, target_dir_base + idx * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64))) {
+				if (!pml4e.Present) {
+					selected_pml4_index = idx;
+					Log(L"[+] Found non-present PML4E at index: " << selected_pml4_index << std::endl);
+					found = true;
+					break;
+				}
+			}
+		}
+
+		if (!found) {
+			Log(L"[-] Failed to find a non-present PML4E in " << space_type << " space" << std::endl);
+			return nullptr;
+		}
+
+		// calc the base virtual address using the selected PML4E index
+		uintptr_t base_va;
+		if (use_high_address) {
+			base_va = 0xFFFF000000000000ULL | page_table::get_pml4e(selected_pml4_index);
+		}
+		else {
+			base_va = page_table::get_pml4e(selected_pml4_index);
+		}
+
+		Log(L"[+] Selected base address: 0x" << std::hex << base_va << std::endl);
+
+		// write page tables
+		auto write_pt_status = write_page_tables(device_handle, target_dir_base, base_va, page_count, use_large_page);
+
+		if (!NT_SUCCESS(write_pt_status)) {
+			Log(L"[-] Failed to write page tables, NTSTATUS: 0x" << std::hex << write_pt_status << std::endl);
+			return nullptr;
+		}
+
+		// flush tb
+		__int64 kefet_ret = 0;
+		static uint64_t kernel_KeFlushEntireTb = intel_driver::GetKernelModuleExport(device_handle, intel_driver::ntoskrnlAddr, "KeFlushEntireTb");
+		if (kernel_KeFlushEntireTb) {
+			intel_driver::CallKernelFunction(device_handle, &kefet_ret, kernel_KeFlushEntireTb, TRUE, TRUE);
+		}
+
+		return reinterpret_cast<void*>(base_va);
+	}
+
+}

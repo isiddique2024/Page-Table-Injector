@@ -9,13 +9,17 @@ enum class request_codes : std::uint32_t {
     unique = 0x92b,
     unload = 0x93c,
     allocate_independent_pages = 0x101c,
+    execute_dll_entrypoint = 0x102c,
+    swap_context = 0x103c,
+    restore_context = 0x104c
 };
 
 enum alloc_mode {
     ALLOC_INSIDE_MAIN_MODULE,
     ALLOC_BETWEEN_LEGIT_MODULES,
     ALLOC_AT_LOW_ADDRESS,
-    ALLOC_AT_HIGH_ADDRESS
+    ALLOC_AT_HIGH_ADDRESS,
+    ALLOC_AT_HYPERSPACE
 };
 
 struct unload_request {
@@ -43,12 +47,23 @@ struct base_request {
 };
 
 struct allocate_independent_pages_request { 
-    uint32_t local_pid; 
-    uint32_t target_pid; 
+    std::uint32_t local_pid;
+    std::uint32_t target_pid;
+    std::uint32_t target_tid;
     void* address; 
     size_t size; 
     bool use_large_page; 
-    uint32_t mode;
+    std::uint32_t mode;
+};
+
+struct execute_dll_via_thread_request {
+    uint32_t local_pid;
+    uint32_t target_pid;
+    uint32_t target_tid;
+    void* alloc_base;
+    unsigned long entry_point;
+    std::uint32_t alloc_mode;
+    bool success;
 };
 
 struct pattern_request {
@@ -56,6 +71,10 @@ struct pattern_request {
     wchar_t mod_name[260];
     char signature[260];
     std::uintptr_t address;
+};
+
+struct swap_context_request {
+    uint32_t target_tid;
 };
 
 struct request_data {
