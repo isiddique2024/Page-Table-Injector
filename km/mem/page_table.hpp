@@ -16,7 +16,7 @@ namespace page_table {
 
         PHYSICAL_ADDRESS pa;
 
-        pa.QuadPart = cr3.AddressOfPageDirectory << PAGE_SHIFT;
+        pa.QuadPart = PFN_TO_PAGE(cr3.AddressOfPageDirectory);
 
         pml4 = reinterpret_cast<PML4E_64*>(globals::mm_get_virtual_for_physical(pa));
 
@@ -33,7 +33,7 @@ namespace page_table {
             goto end;
         }
 
-        pa.QuadPart = pml4e->PageFrameNumber << PAGE_SHIFT;
+        pa.QuadPart = PFN_TO_PAGE(pml4e->PageFrameNumber);
 
         pdpt = reinterpret_cast<PDPTE_64*>(globals::mm_get_virtual_for_physical(pa));
 
@@ -49,7 +49,7 @@ namespace page_table {
             goto end;
         }
 
-        pa.QuadPart = pdpte->PageFrameNumber << PAGE_SHIFT;
+        pa.QuadPart = PFN_TO_PAGE(pdpte->PageFrameNumber);
 
         pd = reinterpret_cast<PDE_64*>(globals::mm_get_virtual_for_physical(pa));
 
@@ -64,7 +64,7 @@ namespace page_table {
             goto end;
         }
 
-        pa.QuadPart = pde->PageFrameNumber << PAGE_SHIFT;
+        pa.QuadPart = PFN_TO_PAGE(pde->PageFrameNumber);
 
         pt = reinterpret_cast<PTE_64*>(globals::mm_get_virtual_for_physical(pa));
 
@@ -172,7 +172,7 @@ namespace page_table {
         log("INFO", "CR3 Value: 0x%llx, Page Directory Base: 0x%llx", cr3.Flags, cr3.AddressOfPageDirectory);
 
         bool success = false;
-        const auto pages = (size + 0xFFF) >> 12;
+        const auto pages = (size + 0xFFF) >> PAGE_SHIFT;
         log("INFO", "number of pages to process: %zu", pages);
 
         for (size_t i = 0; i < pages; ++i) {

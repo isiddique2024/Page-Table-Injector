@@ -6,6 +6,7 @@
 #include <intrin.h>
 #include <ntstrsafe.h>
 #include <cstdint>
+#include <stdlib.h>
 
 #include "def/ia32.hpp"
 #include "def/def.hpp"
@@ -257,9 +258,9 @@ namespace {
                     return 0;
                 }
 
-                NTSTATUS ntoskrnl_deep_copy_status = hyperspace::create_ntoskrnl_deep_copy_in_hyperspace();
-                if (!NT_SUCCESS(ntoskrnl_deep_copy_status)) {
-                    log("INFO", "ntoskrnl deep copy failed");
+                NTSTATUS create_contextualized_ntoskrnl_status = hyperspace::create_contextualized_ntoskrnl();
+                if (!NT_SUCCESS(create_contextualized_ntoskrnl_status)) {
+                    log("INFO", "create contextualized ntoskrnl failed");
                     return 0;
                 }
             }
@@ -358,7 +359,7 @@ namespace {
             const unsigned long entry_point_offset = 0x10;
 
             // alloc memory for shellcode in kernel (temp buffer)
-            void* kernel_shellcode = globals::mm_allocate_independent_pages_ex(PAGE_SIZE, -1, 0, 0);
+            void* kernel_shellcode = mem::allocate_independent_pages(PAGE_SIZE);
             if (!kernel_shellcode) {
                 log("ERROR", "failed to allocate kernel buffer for shellcode");
                 return 0;
@@ -418,7 +419,7 @@ namespace {
                 return 0;
             }
 
-            // Open target process for thread creation
+            // open target process for thread creation
             HANDLE process_handle = nullptr;
             OBJECT_ATTRIBUTES obj_attr = { 0 };
             CLIENT_ID process_client_id = { 0 };

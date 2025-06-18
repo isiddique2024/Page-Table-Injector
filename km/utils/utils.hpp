@@ -2,31 +2,6 @@
 
 namespace utils
 {
-
-    auto get_ntos_base() -> void*
-    {
-        auto idt_base = (unsigned long long)KeGetPcr()->IdtBase;
-        auto align_page = *(unsigned long long*)(idt_base + 4) >> 0xC << 0xC;
-
-        for (; align_page; align_page -= 0x1000)
-        {
-            for (int index = 0; index < 0x1000 - 0x7; index++)
-            {
-                auto current_address = static_cast<long long>(align_page) + index;
-                if ((*(unsigned char*)current_address == 0x48 && *(unsigned char*)(current_address + 1) == 0x8D && *(unsigned char*)(current_address + 2) == 0x3D && *(unsigned char*)(current_address + 6) == 0xFF && *(unsigned char*)(current_address + 7) == 0x48 && *(unsigned char*)(current_address + 8) == 0x63) || (*(unsigned char*)current_address == 0x48 && *(unsigned char*)(current_address + 1) == 0x8D && *(unsigned char*)(current_address + 2) == 0x3D && *(unsigned char*)(current_address + 6) == 0xFF && *(unsigned char*)(current_address + 7) == 0x48 && *(unsigned char*)(current_address + 8) == 0x8B && *(unsigned char*)(current_address + 9) == 0x8C && *(unsigned char*)(current_address + 15) == 0xE8) || (*(unsigned char*)current_address == 0x4C && *(unsigned char*)(current_address + 1) == 0x8D && *(unsigned char*)(current_address + 2) == 0x3D && *(unsigned char*)(current_address + 6) == 0xFF && *(unsigned char*)(current_address + 7) == 0x48 && *(unsigned char*)(current_address + 8) == 0x98))
-                {
-                    auto nto_base_offset = *(int*)(current_address + 3);
-                    auto nto_base_ = current_address + nto_base_offset + 7;
-                    if (!(nto_base_ & 0xFFF))
-                    {
-                        return (void*)nto_base_;
-                    }
-                }
-            }
-        }
-        return 0ULL;
-    }
-
     auto get_windows_version() -> unsigned long
     {
         RTL_OSVERSIONINFOW ver = { 0 };

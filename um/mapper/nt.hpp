@@ -57,6 +57,7 @@ namespace nt
 		MI_REMOVE_PHYSICAL_MEMORY,
 		SET_PARITY_ERROR,
 		SET_LOCK_BIT,
+		HIDE_TRANSLATION
 	};
 
 	typedef struct _DRIVER_OBJECT

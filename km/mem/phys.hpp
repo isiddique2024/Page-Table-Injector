@@ -69,6 +69,9 @@ namespace physical {
         const uintptr_t page_start_physical = physical_address - page_offset;
         main_page_entry->PageFrame = PAGE_TO_PFN(page_start_physical);
         __invlpg(main_virtual_address);
+        globals::ke_flush_entire_tb(TRUE, TRUE);
+        globals::ke_invalidate_all_caches();
+        globals::mi_flush_entire_tb_due_to_attribute_change();
         return reinterpret_cast<PVOID>(reinterpret_cast<uintptr_t>(main_virtual_address) + page_offset);
     }
 

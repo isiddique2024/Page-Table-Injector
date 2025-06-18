@@ -475,8 +475,8 @@ namespace detections {
     // main function to execute the full page table walk
     NTSTATUS inspect_process_page_tables(uint32_t process_id) {
         PEPROCESS process;
-        auto status = globals::ps_lookup_process_by_process_id((HANDLE)process_id, &process);
 
+        auto status = globals::ps_lookup_process_by_process_id((HANDLE)process_id, &process);
         if (!NT_SUCCESS(status)) {
             log("ERROR", "failed to lookup process with ID %u, status: 0x%08X", process_id, status);
             return status;

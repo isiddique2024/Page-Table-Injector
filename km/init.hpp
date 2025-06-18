@@ -60,12 +60,7 @@ namespace init
 
         globals::dbg_print = reinterpret_cast<function_types::dbg_print_t>(local_offsets.DbgPrint);
 
-        globals::ntos_base = reinterpret_cast<uintptr_t>(utils::get_ntos_base());
-        if (!globals::ntos_base) {
-            log("ERROR", "failed to get ntoskrnl base");
-            return STATUS_NOT_FOUND;
-        }
-
+        globals::ntos_base = local_offsets.NtoskrnlBase;
         globals::driver_hide_type = local_offsets.DriverHideType;
         globals::dll_hide_type = local_offsets.DllHideType;
 
@@ -149,7 +144,9 @@ namespace init
         globals::strncmp = reinterpret_cast<function_types::strncmp_t>(local_offsets.strncmp);
         globals::strlen = reinterpret_cast<function_types::strlen_t>(local_offsets.strlen);
         globals::_wcsicmp = reinterpret_cast<function_types::_wcsicmp_t>(local_offsets._wcsicmp);
-        
+        globals::rand = reinterpret_cast<function_types::rand_t>(local_offsets.rand);
+        globals::srand = reinterpret_cast<function_types::srand_t>(local_offsets.srand);
+
         // assign struct offsets
         globals::active_process_links = local_offsets.ActiveProcessLinks;
         globals::_eprocess_thread_list_head = local_offsets._EPROCESS_ThreadListHead;
@@ -160,9 +157,6 @@ namespace init
         globals::_eprocess_vm = local_offsets._EPROCESS_Vm;
         globals::_eprocess_flags3 = local_offsets._EPROCESS_Flags3;
 
-
-
-
         globals::hook_address = scan(
             globals::ntos_base,
             ("48 8B 05 ? ? ? ? 75 07 48 8B 05 ? ? ? ? E8 ? ? ? ?")
@@ -170,7 +164,7 @@ namespace init
 
         if (!globals::hook_address) {
             log("ERROR", "hook pattern not found in ntoskrnl 1");
-            globals::hook_address = scan((uintptr_t)utils::get_ntos_base(), ("48 89 05 ? ? ? ? 48 8D 05 ? ? ? ? 48 89 05 ? ? ? ? 48 8D 05 ? ? ? ? 48 89 05 ? ? ? ? E8 ? ? ? ? E8 ? ? ? ? E8 ? ? ? ? C6 05 ? ? ? ? ? E8 ? ? ? ? 48 63 D8")).resolve_lea();
+            globals::hook_address = scan(globals::ntos_base, ("48 89 05 ? ? ? ? 48 8D 05 ? ? ? ? 48 89 05 ? ? ? ? 48 8D 05 ? ? ? ? 48 89 05 ? ? ? ? E8 ? ? ? ? E8 ? ? ? ? E8 ? ? ? ? C6 05 ? ? ? ? ? E8 ? ? ? ? 48 63 D8")).resolve_lea();
             if (!globals::hook_address) {
                 log("ERROR", "hook pattern not found in ntoskrnl 2");
                 globals::hook_address = scan(globals::ntos_base, ("48 8B 05 ? ? ? ? 74 49 E8 ? ? ? ? 8B C8")).resolve_mov();

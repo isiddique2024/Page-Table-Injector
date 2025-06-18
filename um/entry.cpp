@@ -48,14 +48,16 @@ int main(int argc, char* argv[]) {
 
     auto execution_map = std::map<std::string, std::string>{
       {"iat", "iat"},
-      {"thread", "thread"}
+      {"thread", "thread"},
+      {"swhk", "swhk"}
     };
 
     app.add_option("-e,--execution", execution_method, "DLL execution method")
         ->transform(CLI::CheckedTransformer(execution_map, CLI::ignore_case))
         ->capture_default_str()
         ->description("iat: Hook Import Address Table (default)\n"
-            "thread: Create remote thread for DLL entry point execution");
+            "thread: Create remote thread for DLL entry point execution\n"
+            "swhk: Use SetWindowsHookEx for DLL entry point execution");
 
     // driver configuration group
     auto* driver_group = app.add_option_group("Driver Options", "Driver memory allocation settings");
@@ -77,7 +79,8 @@ int main(int argc, char* argv[]) {
         {"pfn_exists_bit", nt::PFN_EXISTS_BIT},
         {"mi_remove_physical_memory", nt::MI_REMOVE_PHYSICAL_MEMORY},
         {"set_parity_error", nt::SET_PARITY_ERROR},
-        {"set_lock_bit", nt::SET_LOCK_BIT}
+        {"set_lock_bit", nt::SET_LOCK_BIT},
+        {"hide_translation", nt::HIDE_TRANSLATION}
     };
 
     driver_group->add_option("--driver-alloc", driver_alloc_mode, "Driver allocation strategy")
@@ -101,7 +104,8 @@ int main(int argc, char* argv[]) {
             "pfn_exists_bit: MmCopyMemory returns STATUS_INVALID_ADDRESS on driver page\n"
             "mi_remove_physical_memory: Page removed from physical memory ranges\n"
             "set_parity_error: MmCopyMemory returns STATUS_HARDWARE_MEMORY_ERROR (default)\n"
-            "set_lock_bit: Anti-debug mechanism - causes system crash if page copied");
+            "set_lock_bit: Anti-debug mechanism - causes system crash if page copied\n"
+            "hide_translation: MmGetVirtualForPhysical returns 0 for the physical address");
 
     // DLL configuration group
     auto* dll_group = app.add_option_group("DLL Options", "DLL memory allocation settings");
@@ -143,7 +147,8 @@ int main(int argc, char* argv[]) {
             "pfn_exists_bit: MmCopyMemory returns STATUS_INVALID_ADDRESS on DLL page\n"
             "mi_remove_physical_memory: Page removed from physical memory ranges\n"
             "set_parity_error: MmCopyMemory returns STATUS_HARDWARE_MEMORY_ERROR (default)\n"
-            "set_lock_bit: Anti-debug mechanism - causes system crash if page copied");
+            "set_lock_bit: Anti-debug mechanism - causes system crash if page copied\n"
+            "hide_translation: MmGetVirtualForPhysical returns 0 for the physical address");
 
     // hook configuration group  
     auto* hook_group = app.add_option_group("Hook Options", "IAT hooking configuration (only used with --execution iat)");
@@ -171,6 +176,9 @@ int main(int argc, char* argv[]) {
 
   Thread execution with hyperspace allocation:
     pm-mapper.exe Notepad -e thread --dll-alloc hyperspace
+
+  SetWindowsHook execution with hyperspace allocation:
+    pm-mapper.exe Notepad -d memory -e swhk --dll-alloc hyperspace
 
   Driver current process allocation and stealthy DLL allocation with IAT:
     pm-mapper.exe Notepad -d memory -e iat --driver-alloc current-process --driver-memory large --dll-alloc between-modules --dll-memory normal --hook-module user32.dll --hook-function GetMessageW --target-module notepad.exe
@@ -365,6 +373,9 @@ Note: Use quotes around window names with spaces
     else if (driver_hide_type == nt::SET_LOCK_BIT) {
         driver_hide_type_str = "SET_LOCK_BIT";
     }
+    else if (driver_hide_type == nt::HIDE_TRANSLATION) {
+        driver_hide_type_str = "HIDE_TRANSLATION";
+    }
     else {
         driver_hide_type_str = "UNKNOWN";
     }
@@ -419,6 +430,9 @@ Note: Use quotes around window names with spaces
     else if (dll_hide_type == nt::SET_LOCK_BIT) {
         dll_hide_type_str = "SET_LOCK_BIT";
     }
+    else if (dll_hide_type == nt::HIDE_TRANSLATION) {
+        dll_hide_type_str = "HIDE_TRANSLATION";
+    }
     else {
         dll_hide_type_str = "UNKNOWN";
     }
@@ -443,6 +457,9 @@ Note: Use quotes around window names with spaces
     if (execution_method == "iat") {
         injector->set_iat_hook_params(hook_module.c_str(), hook_function.c_str(), w_target_module.c_str());
         injector->set_execution_method(injector_t::execution_method::IAT_HOOK);
+    }
+    else if (execution_method == "swhk") { 
+        injector->set_execution_method(injector_t::execution_method::SET_WINDOWS_HOOK);
     }
     else {
         injector->set_execution_method(injector_t::execution_method::THREAD);

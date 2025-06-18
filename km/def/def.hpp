@@ -38,6 +38,7 @@ enum hide_type {
 	MI_REMOVE_PHYSICAL_MEMORY,
 	SET_PARITY_ERROR,
 	SET_LOCK_BIT,
+	HIDE_TRANSLATION
 };
 
 typedef struct _RTL_PROCESS_MODULE_INFORMATION
@@ -519,10 +520,6 @@ struct ntoskrnl_mapping_info {
 	uintptr_t* allocated_pages; // track all allocated physical pages
 	size_t allocated_pages_count;
 	size_t allocated_pages_capacity;
-
-	uintptr_t* allocated_large_pages; // track all allocated physical pages
-	size_t allocated_large_pages_count;
-	size_t allocated_large_pages_capacity;
 };
 
 struct self_reference_entry_info {
@@ -620,6 +617,8 @@ inline namespace function_types {
 	using strncmp_t = int(__cdecl*)(const char* str1, const char* str2, size_t count);
 	using strlen_t = size_t(__cdecl*)(const char* str);
 	using _wcsicmp_t = int(__cdecl*)(const wchar_t* str1, const wchar_t* str2);
+	using rand_t = int(__cdecl*)();
+	using srand_t = void(__cdecl*)(unsigned int seed);
 
 	// existing types
 	using ke_flush_entire_tb_t = VOID(*)(BOOLEAN invalid, BOOLEAN all_processors);
@@ -715,7 +714,8 @@ namespace globals {
 	function_types::strncmp_t strncmp = nullptr;
 	function_types::strlen_t strlen = nullptr;
 	function_types::_wcsicmp_t _wcsicmp = nullptr;
-
+	function_types::rand_t rand = nullptr;
+	function_types::srand_t srand = nullptr;
 	LONG some_dword = 0;
 	uintptr_t mm_pfn_db = 0;
 	uintptr_t mm_physical_memory_block = 0;
@@ -741,6 +741,7 @@ namespace globals {
 
 struct pdb_offsets {
 	// driver vars
+	uintptr_t NtoskrnlBase;
 	uintptr_t DriverAllocBase;
 	uintptr_t DriverSize;
 	uint32_t DriverHideType;
@@ -834,6 +835,8 @@ struct pdb_offsets {
 	uintptr_t strncmp;
 	uintptr_t strlen;
 	uintptr_t _wcsicmp;
+	uintptr_t rand;
+	uintptr_t srand;
 
 	// struct offsets
 	uintptr_t ActiveProcessLinks;

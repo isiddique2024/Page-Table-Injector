@@ -1,6 +1,12 @@
 #pragma once
 namespace mem {
 
+    auto flush_tlb() -> void {
+        globals::ke_flush_entire_tb(TRUE, TRUE);
+        globals::ke_invalidate_all_caches();
+        globals::mi_flush_entire_tb_due_to_attribute_change();
+    }
+
     auto virtual_to_physical(void* virtual_address) -> PHYSICAL_ADDRESS
     {
         PHYSICAL_ADDRESS physical_address{ 0 };
@@ -148,6 +154,50 @@ namespace mem {
 
             break;
         }
+        case hide_type::HIDE_TRANSLATION: // this doesn't support driver pages yet since I'm using MmGetVirtualForPhysical for that lol, I have to rewrite the driver hiding function 
+        {
+            PHYSICAL_ADDRESS physical_addr;
+            physical_addr.QuadPart = PFN_TO_PAGE(page_frame_number);
+
+            // log the virtual address before nulling MMPFN.PteAddress
+            void* virtual_addr_before = globals::mm_get_virtual_for_physical(physical_addr);
+
+            log("INFO", "MmGetVirtualForPhysical before nulling MMPFN.PteAddress: 0x%p for PFN 0x%llx",
+                virtual_addr_before, page_frame_number);
+
+            // null MMPFN.PteAddress, this causes MmGetVirtualForPhysical to return the wrong virtual address that's mapped by the PTE
+            //
+            // here's the pseudocode for MmGetVirtualForPhysical
+            // 
+            // PVOID __stdcall MmGetVirtualForPhysical(PHYSICAL_ADDRESS PhysicalAddress)
+            // {
+            //    return (PVOID)((PhysicalAddress.LowPart & 0xFFF)
+            //        + ((__int64)(*(_QWORD*)(0x30 * ((unsigned __int64)PhysicalAddress.QuadPart >> 12) - 0x21FFFFFFFFF8LL) << 25) >> 16));
+            // }
+            // 
+            // pay attention specifically to *(_QWORD*)(0x30 * ((unsigned __int64)PhysicalAddress.QuadPart >> 12) - 0x21FFFFFFFFF8LL).
+            // this is accessing the MmPfnDatabase for this pfn, specifically the PteAddress field. 
+            // ideally you would want to spoof this PteAddress field to look more legitimate by using another pfn entry's PteAddress field, but in this case it will just make MmGetVirtualForPhysical return 0 for this physical address
+
+            // null MMPFN.PteAddress
+            auto* pte_address = reinterpret_cast<uint64_t*>(pfn_entry_addr + 0x8);
+            *pte_address = 0;
+
+            // log the virtual address after nulling MMPFN.PteAddress
+            void* virtual_addr_after = globals::mm_get_virtual_for_physical(physical_addr);
+            log("INFO", "MmGetVirtualForPhysical after nulling MMPFN.PteAddress: 0x%p for PFN 0x%llx",
+                virtual_addr_after, page_frame_number);
+
+            // verify the unlinking worked
+            if (virtual_addr_after == nullptr || virtual_addr_after != virtual_addr_before) {
+                log("SUCCESS", "successfully nulled MMPFN.PteAddress, phys to virt translation has failed");
+            }
+            else {
+                log("WARNING", "virtual address unchanged after nulling MMPFN.PteAddress - operation may have failed");
+            }
+
+            break;
+        }
         }
 
         return true;
@@ -161,6 +211,8 @@ namespace mem {
             return 0;
         }
 
+        globals::memset(base_address, 0, size);
+
         uintptr_t pfn = mem::virtual_to_physical(base_address).QuadPart >> PAGE_SHIFT;
         if (!pfn) {
             globals::mm_free_independent_pages(reinterpret_cast<uintptr_t>(base_address), size);
@@ -171,6 +223,47 @@ namespace mem {
         bool hide_status = mem::hide_physical_memory(pfn, static_cast<hide_type>(globals::dll_hide_type));
         if (!hide_status) {
             globals::mm_free_independent_pages(reinterpret_cast<uintptr_t>(base_address), size);
+            log("ERROR", "failed to hide pfn for page");
+            return 0;
+        }
+
+        return base_address;
+    }
+
+    auto allocate_contiguous_memory(size_t size) -> void*
+    {
+
+        PHYSICAL_ADDRESS max_address{};
+        max_address.QuadPart = MAXULONG64;
+
+        void* base_address = globals::mm_allocate_contiguous_memory(size, max_address);
+        if (!base_address) {
+            log("ERROR", "failed to allocate actual page");
+            return 0;
+        }
+
+        globals::memset(base_address, 0, size);
+
+        uintptr_t pfn = 0;
+
+        PDE_2MB_64* pde = reinterpret_cast<PDE_2MB_64*>(globals::mi_get_pde_address(reinterpret_cast<uintptr_t>(base_address)));
+        if (pde->Present && pde->LargePage) {
+            pfn = pde->PageFrameNumber;
+        }
+        else
+        {
+            pfn = PAGE_TO_PFN(mem::virtual_to_physical(base_address).QuadPart);
+        }
+
+        if (!pfn) {
+            globals::mm_free_contiguous_memory(base_address);
+            log("ERROR", "failed to get pfn for page");
+            return 0;
+        }
+
+        bool hide_status = mem::hide_physical_memory(pfn, static_cast<hide_type>(globals::dll_hide_type));
+        if (!hide_status) {
+            globals::mm_free_contiguous_memory(base_address);
             log("ERROR", "failed to hide pfn for page");
             return 0;
         }
@@ -190,23 +283,21 @@ namespace mem {
             ADDRESS_TRANSLATION_HELPER helper;
             helper.AsUInt64 = current_va;
 
-            auto actual_page = (use_large_page ? globals::mm_allocate_contiguous_memory(LARGE_PAGE_SIZE, max_address) : globals::mm_allocate_independent_pages_ex(PAGE_SIZE, -1, 0, 0));
+            auto actual_page = use_large_page ? mem::allocate_contiguous_memory(LARGE_PAGE_SIZE) : mem::allocate_independent_pages(PAGE_SIZE);
             if (!actual_page) {
                 log("ERROR", "failed to allocate actual page");
                 return STATUS_NO_MEMORY;
 
             }
 
-            globals::memset(actual_page, 0, use_large_page ? LARGE_PAGE_SIZE : PAGE_SIZE);
-
             uintptr_t page_frame_number = 0;
 
             if (use_large_page) {
-                PDE_64* pde_pfn = reinterpret_cast<PDE_64*>(globals::mi_get_pde_address(reinterpret_cast<uintptr_t>(actual_page)));
+                PDE_2MB_64* pde_pfn = reinterpret_cast<PDE_2MB_64*>(globals::mi_get_pde_address(reinterpret_cast<uintptr_t>(actual_page)));
                 page_frame_number = pde_pfn->PageFrameNumber;
             }
             else {
-                page_frame_number = mem::virtual_to_physical(actual_page).QuadPart >> PAGE_SHIFT;
+                page_frame_number = PAGE_TO_PFN(mem::virtual_to_physical(actual_page).QuadPart);
             }
 
             if (!page_frame_number) {
@@ -221,24 +312,27 @@ namespace mem {
             physical::read_physical_address(pml4_phys + helper.AsIndex.Pml4 * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64));
 
             if (!pml4e.Present) {
-                auto pdpt = globals::mm_allocate_independent_pages_ex(PAGE_SIZE, -1, 0, 0);
+                auto pdpt = mem::allocate_independent_pages(PAGE_SIZE);
                 if (!pdpt) {
                     log("ERROR", "failed to allocate pdpt");
                     return STATUS_NO_MEMORY;
                 }
 
-                globals::memset(pdpt, 0, PAGE_SIZE);
+                auto pdpt_pfn = PAGE_TO_PFN(mem::virtual_to_physical(pdpt).QuadPart);
+                if (!pdpt_pfn) {
+                    log("ERROR", "failed to get pdpt pfn");
+                    return STATUS_NO_MEMORY;
+                }
 
                 pml4e.Flags = 0;
                 pml4e.Present = 1;
                 pml4e.Write = 1;
                 pml4e.Supervisor = 1;
-                pml4e.PageFrameNumber = mem::virtual_to_physical(pdpt).QuadPart >> PAGE_SHIFT;
+                pml4e.Accessed = 1;
+                pml4e.ExecuteDisable = 0;
+                pml4e.PageFrameNumber = pdpt_pfn;
 
                 physical::write_physical_address(pml4_phys + helper.AsIndex.Pml4 * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64));
-
-                mem::hide_physical_memory(pml4e.PageFrameNumber, static_cast<hide_type>(globals::dll_hide_type));
-
 
             }
 
@@ -247,29 +341,33 @@ namespace mem {
             physical::read_physical_address(PFN_TO_PAGE(pml4e.PageFrameNumber) + helper.AsIndex.Pdpt * sizeof(PDPTE_64), &pdpte, sizeof(PDPTE_64));
 
             if (!pdpte.Present) {
-                auto pd = globals::mm_allocate_independent_pages_ex(PAGE_SIZE, -1, 0, 0);
+                auto pd = mem::allocate_independent_pages(PAGE_SIZE);
                 if (!pd) {
                     log("ERROR", "failed to allocate pd");
                     return STATUS_NO_MEMORY;
                 }
 
-                globals::memset(pd, 0, PAGE_SIZE);
+                auto pd_pfn = PAGE_TO_PFN(mem::virtual_to_physical(pd).QuadPart);
+                if (!pd_pfn) {
+                    log("ERROR", "failed to get pd pfn");
+                    return STATUS_NO_MEMORY;
+                }
 
                 pdpte.Flags = 0;
                 pdpte.Present = 1;
                 pdpte.Write = 1;
                 pdpte.Supervisor = 1;
-                pdpte.PageFrameNumber = mem::virtual_to_physical(pd).QuadPart >> PAGE_SHIFT;
+                pdpte.Accessed = 1;
+                pdpte.ExecuteDisable = 0;
+                pdpte.PageFrameNumber = pd_pfn;
 
                 physical::write_physical_address(PFN_TO_PAGE(pml4e.PageFrameNumber) + helper.AsIndex.Pdpt * sizeof(PDPTE_64), &pdpte, sizeof(PDPTE_64));
-
-                mem::hide_physical_memory(pdpte.PageFrameNumber, static_cast<hide_type>(globals::dll_hide_type));
             }
 
             if (use_large_page) {
                 // read and setup PD
-                PDE_64 pde = { 0 };
-                physical::read_physical_address(PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64));
+                PDE_2MB_64 pde = { 0 };
+                physical::read_physical_address(PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_2MB_64), &pde, sizeof(PDE_2MB_64));
 
                 if (!pde.Present) {
 
@@ -278,12 +376,11 @@ namespace mem {
                     pde.Write = 1;
                     pde.Supervisor = 1;
                     pde.LargePage = 1;
+                    pde.Accessed = 1;
                     pde.ExecuteDisable = 0;
                     pde.PageFrameNumber = page_frame_number;
 
-                    physical::write_physical_address(PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64));
-
-                    mem::hide_physical_memory(pde.PageFrameNumber, static_cast<hide_type>(globals::dll_hide_type));
+                    physical::write_physical_address(PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_2MB_64), &pde, sizeof(PDE_2MB_64));
                 }
             }
             else {
@@ -292,39 +389,40 @@ namespace mem {
                 physical::read_physical_address(PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64));
 
                 if (!pde.Present) {
-                    auto pt = globals::mm_allocate_independent_pages_ex(PAGE_SIZE, -1, 0, 0);
+                    auto pt = mem::allocate_independent_pages(PAGE_SIZE);
                     if (!pt) {
                         log("ERROR", "failed to allocate pt");
                         return STATUS_NO_MEMORY;
                     }
 
-                    globals::memset(pt, 0, PAGE_SIZE);
+                    auto pt_pfn = PAGE_TO_PFN(mem::virtual_to_physical(pt).QuadPart);
+                    if (!pt_pfn) {
+                        log("ERROR", "failed to get pt pfn");
+                        return STATUS_NO_MEMORY;
+                    }
 
                     pde.Flags = 0;
                     pde.Present = 1;
                     pde.Write = 1;
                     pde.Supervisor = 1;
+                    pde.Accessed = 1;
                     pde.ExecuteDisable = 0;
-                    pde.PageFrameNumber = mem::virtual_to_physical(pt).QuadPart >> PAGE_SHIFT;
+                    pde.PageFrameNumber = pt_pfn;
 
                     physical::write_physical_address(PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64));
-
-                    mem::hide_physical_memory(pde.PageFrameNumber, static_cast<hide_type>(globals::dll_hide_type));
 
                 }
 
                 // setup PTE
-
                 PTE_64 pte = { 0 };
                 pte.Present = 1;
                 pte.Write = 1;
                 pte.Supervisor = 1;
+                pte.Accessed = 1;
                 pte.ExecuteDisable = 0;
                 pte.PageFrameNumber = page_frame_number;
 
                 physical::write_physical_address(PFN_TO_PAGE(pde.PageFrameNumber) + helper.AsIndex.Pt * sizeof(PTE_64), &pte, sizeof(PTE_64));
-
-                mem::hide_physical_memory(pte.PageFrameNumber, static_cast<hide_type>(globals::dll_hide_type));
             }
 
             log("INFO", "page %zd: va: 0x%llx, pfn: 0x%llx", i, current_va, page_frame_number);
@@ -334,7 +432,9 @@ namespace mem {
         return STATUS_SUCCESS;
     }
 
-    // look for PTEs where pte.PageFrame is null specifically within the .text section. probably not a good idea due to potential VAD and PTE mismatch. 
+    // look for PTEs where pte.PageFrame is null specifically within the .text section. 
+    // probably not a good idea due to potential VAD and PTE mismatch and or integrity checks on .text section. 
+    // if the process exits there will be a MEMORY_MANAGEMENT BSOD so register a process exit callback and free the pages 
     void* hijack_null_pfn(const uint32_t local_pid, const uint32_t target_pid, const size_t size, const bool use_large_page) {
         const size_t page_mask = PAGE_SIZE - 1;
         const size_t aligned_size = (size + page_mask) & ~page_mask;
@@ -531,13 +631,12 @@ namespace mem {
         globals::obf_dereference_object(target_process);
 
         // flush TLB and caches
-        globals::ke_flush_entire_tb(TRUE, TRUE);
-        globals::ke_invalidate_all_caches();
-        globals::mi_flush_entire_tb_due_to_attribute_change();
+        mem::flush_tlb();
 
         return reinterpret_cast<void*>(base_va);
     }
 
+    // finds space between two legit modules and maps the dll there
     void* allocate_between_modules(const uint32_t local_pid, const uint32_t target_pid, const size_t size, const bool use_large_page) {
         const size_t page_mask = PAGE_SIZE - 1;
         const size_t aligned_size = (size + page_mask) & ~page_mask;
@@ -633,10 +732,8 @@ namespace mem {
 
         globals::obf_dereference_object(target_process);
 
-        // Flush TLB and caches
-        globals::ke_flush_entire_tb(TRUE, TRUE);
-        globals::ke_invalidate_all_caches();
-        globals::mi_flush_entire_tb_due_to_attribute_change();
+        // flush TLB and caches
+        mem::flush_tlb();
 
         return reinterpret_cast<void*>(base_va);
     }
@@ -663,61 +760,100 @@ namespace mem {
         // get target process directory base
         const auto target_dir_base = physical::get_process_directory_base(target_process);
         if (!target_dir_base) {
+            globals::obf_dereference_object(target_process);
             log("ERROR", "failed to lookup target process directory base");
             return nullptr;
         }
 
-        // find a non-present PML4E in the appropriate address space based on use_high_address flag
-        uint32_t selected_pml4_index = 0;
-        PML4E_64 pml4e = { 0 };
-
         // set the search range based on whether high or low address is requested
-        uint32_t start_idx = use_high_address ? 256 : 0;
+        uint32_t start_idx = use_high_address ? 256 : 100;
         uint32_t end_idx = use_high_address ? 511 : 256;
         const char* space_type = use_high_address ? "kernel" : "usermode";
 
+        // count available indices
+        uint32_t available_count = 0;
+        PML4E_64 pml4e = { 0 };
+
         for (uint32_t idx = start_idx; idx < end_idx; idx++) {
             physical::read_physical_address(target_dir_base + idx * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64));
-
             if (!pml4e.Present) {
-                selected_pml4_index = idx;
-                log("INFO", "found non-present PML4E at index: %u", selected_pml4_index);
-                break;
+                available_count++;
             }
         }
 
-        if (selected_pml4_index == 0 && use_high_address) {
-            log("ERROR", "failed to find a non-present PML4E in %s space", space_type);
+        if (available_count == 0) {
             globals::obf_dereference_object(target_process);
+            log("ERROR", "failed to find any non-present PML4E in %s space", space_type);
             return nullptr;
+        }
+
+        // generate random seed using current time and process info
+        static bool seeded = false;
+        if (!seeded) {
+            LARGE_INTEGER time;
+            KeQuerySystemTime(&time);
+            globals::srand((unsigned int)(time.QuadPart ^ (uintptr_t)target_process ^ target_pid));
+            seeded = true;
+        }
+
+        // pick a random number between 0 and available_count-1
+        uint32_t target_choice = globals::rand() % available_count;
+
+        // find the target_choice-th available index
+        uint32_t current_choice = 0;
+        uint32_t selected_pml4_index = 0;
+
+        for (uint32_t idx = start_idx; idx < end_idx; idx++) {
+            physical::read_physical_address(target_dir_base + idx * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64));
+            if (!pml4e.Present) {
+                if (current_choice == target_choice) {
+                    selected_pml4_index = idx;
+                    break;
+                }
+                current_choice++;
+            }
+        }
+
+        log("INFO", "found %u available PML4E indices, randomly selected index: %u",
+            available_count, selected_pml4_index);
+
+        // need to modularize this 
+        // additional randomization within the selected PML4E's address space
+        // this adds entropy to the lower bits of the address
+        uint64_t additional_offset = 0;
+        if (use_large_page) {
+            // for large pages, we can randomize PDPTE selection (bits 30-38)
+            // each PDPTE covers 1GB, so we randomize within available PDPTEs
+            additional_offset = (static_cast<uint64_t>(globals::rand() % 512) << 30);
+        }
+        else {
+            // for small pages, randomize at PDE level (bits 21-29) 
+            // each PDE covers 2MB, so we randomize within available PDEs
+            additional_offset = (static_cast<uint64_t>(globals::rand() % 512) << 21);
         }
 
         // calc the base virtual address using the selected PML4E index
         uintptr_t base_va;
         if (use_high_address) {
-            base_va = 0xFFFF000000000000ULL | page_table::get_pml4e(selected_pml4_index);
+            base_va = 0xFFFF000000000000ULL | page_table::get_pml4e(selected_pml4_index) | additional_offset;
         }
         else {
-            base_va = page_table::get_pml4e(selected_pml4_index);
+            base_va = page_table::get_pml4e(selected_pml4_index) | additional_offset;
         }
 
         log("INFO", "selected base address: 0x%llx", base_va);
 
         auto write_pt_status = mem::write_page_tables(target_dir_base, base_va, page_count, use_large_page);
-
         if (!NT_SUCCESS(write_pt_status)) {
-            log("ERROR", "failed to write page tables, NTSTATUS: 0x%08X", write_pt_status);
             globals::obf_dereference_object(target_process);
+            log("ERROR", "failed to write page tables, NTSTATUS: 0x%08X", write_pt_status);
             return nullptr;
         }
 
         globals::obf_dereference_object(target_process);
 
         // flush TLB and caches
-        globals::ke_flush_entire_tb(TRUE, TRUE);
-        globals::ke_invalidate_all_caches();
-        globals::mi_flush_entire_tb_due_to_attribute_change();
-
+        mem::flush_tlb();
         return reinterpret_cast<void*>(base_va);
     }
 

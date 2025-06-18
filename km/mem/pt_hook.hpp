@@ -26,95 +26,53 @@ namespace pt_hook
 
     // get physical address from virtual address using page tables
     uintptr_t virt_to_phys_via_pml4(uintptr_t pml4_pa, uintptr_t va) {
-        uint32_t pml4_idx = (va >> 39) & 0x1FF;
-        uint32_t pdpt_idx = (va >> 30) & 0x1FF;
-        uint32_t pd_idx = (va >> 21) & 0x1FF;
-        uint32_t pt_idx = (va >> 12) & 0x1FF;
-        uint32_t page_offset = va & 0xFFF;
+        ADDRESS_TRANSLATION_HELPER addr_helper = { 0 };
+        addr_helper.AsUInt64 = va;
 
         // read PML4E
         PML4E_64 pml4e = { 0 };
-        if (!NT_SUCCESS(physical::read_physical_address(pml4_pa + pml4_idx * 8, &pml4e, sizeof(pml4e)))) {
+        if (!NT_SUCCESS(physical::read_physical_address(pml4_pa + addr_helper.AsIndex.Pml4 * 8, &pml4e, sizeof(pml4e)))) {
             return 0;
         }
         if (!pml4e.Present) return 0;
 
         // read PDPTE
         PDPTE_64 pdpte = { 0 };
-        uintptr_t pdpt_pa = pml4e.PageFrameNumber << 12;
-        if (!NT_SUCCESS(physical::read_physical_address(pdpt_pa + pdpt_idx * 8, &pdpte, sizeof(pdpte)))) {
+        uintptr_t pdpt_pa = PFN_TO_PAGE(pml4e.PageFrameNumber);
+        if (!NT_SUCCESS(physical::read_physical_address(pdpt_pa + addr_helper.AsIndex.Pdpt * 8, &pdpte, sizeof(pdpte)))) {
             return 0;
         }
         if (!pdpte.Present) return 0;
 
+        // check for 1GB huge page at PDPT level
+        if (pdpte.LargePage) {
+            return PFN_TO_PAGE(pdpte.PageFrameNumber) + addr_helper.AsPageOffset.Mapping1Gb;
+        }
+
         // read PDE
         PDE_64 pde = { 0 };
-        uintptr_t pd_pa = pdpte.PageFrameNumber << 12;
-        if (!NT_SUCCESS(physical::read_physical_address(pd_pa + pd_idx * 8, &pde, sizeof(pde)))) {
+        uintptr_t pd_pa = PFN_TO_PAGE(pdpte.PageFrameNumber);
+        if (!NT_SUCCESS(physical::read_physical_address(pd_pa + addr_helper.AsIndex.Pd * 8, &pde, sizeof(pde)))) {
             return 0;
         }
         if (!pde.Present) return 0;
 
-        // check if it's a large page
+        // check for 2MB large page at PD level
         if (pde.LargePage) {
-            // 2MB large page
-            return (pde.PageFrameNumber << 12) + (va & 0x1FFFFF);
+            return PFN_TO_PAGE(pde.PageFrameNumber) + addr_helper.AsPageOffset.Mapping2Mb;
         }
 
         // read PTE for 4KB page
         PTE_64 pte = { 0 };
-        uintptr_t pt_pa = pde.PageFrameNumber << 12;
-        if (!NT_SUCCESS(physical::read_physical_address(pt_pa + pt_idx * 8, &pte, sizeof(pte)))) {
+        uintptr_t pt_pa = PFN_TO_PAGE(pde.PageFrameNumber);
+        if (!NT_SUCCESS(physical::read_physical_address(pt_pa + addr_helper.AsIndex.Pt * 8, &pte, sizeof(pte)))) {
             return 0;
         }
         if (!pte.Present) return 0;
 
-        return (pte.PageFrameNumber << 12) + page_offset;
+        // 4KB page
+        return PFN_TO_PAGE(pte.PageFrameNumber) + addr_helper.AsPageOffset.Mapping4Kb;
     }
-
-    // calc the length of instructions we need to overwrite
-    //size_t calculate_hook_size(uintptr_t target_pa, size_t min_size = 14) {
-    //    uint8_t buffer[64];
-    //    if (!NT_SUCCESS(physical::read_physical_address(target_pa, buffer, sizeof(buffer)))) {
-    //        return 0;
-    //    }
-
-    //    size_t total_len = 0;
-    //    while (total_len < min_size && total_len < sizeof(buffer)) {
-    //        hde64s hde;
-    //        HdeDisassemble(&buffer[total_len], &hde);
-    //        if (hde.len == 0) break;
-    //        total_len += hde.len;
-    //    }
-
-    //    return total_len;
-    //}
-
-    //// create trampoline function
-    //uintptr_t create_trampoline(uintptr_t target_va, uintptr_t target_pa, uint8_t* original_bytes, size_t hook_size) {
-    //    // alloc memory for trampoline
-    //    auto trampoline = reinterpret_cast<uint8_t*>(
-    //        mem::allocate_independent_pages(0x100));
-    //    if (!trampoline) {
-    //        return 0;
-    //    }
-
-    //    // copy original instructions
-    //    globals::memcpy(trampoline, original_bytes, hook_size);
-
-    //    // add jump back to original function after hook
-    //    LARGE_INTEGER jmp_back = { .QuadPart = static_cast<int64_t>(target_va + hook_size) };
-    //    globals::memcpy(&trampoline[hook_size], jmp_code, sizeof(jmp_code));
-    //    globals::memcpy(&trampoline[hook_size + 1], &jmp_back.LowPart, sizeof(uint32_t));
-    //    globals::memcpy(&trampoline[hook_size + 9], &jmp_back.HighPart, sizeof(uint32_t));
-
-    //    bool set_page_protection = globals::mm_set_page_protection(reinterpret_cast<uintptr_t>(trampoline), 0x100, PAGE_EXECUTE_READWRITE);
-    //    if (!set_page_protection) {
-    //        return 0;
-    //    }
-
-    //    return reinterpret_cast<uintptr_t>(trampoline);
-    //}
 
       // calc the length of instructions we need to overwrite
     size_t calculate_hook_size(uintptr_t target_pa, size_t min_size = 12) {

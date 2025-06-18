@@ -216,7 +216,7 @@ namespace hyperspace {
             pml4e.Present = 1;
             pml4e.Write = 1;
             pml4e.Supervisor = 0;
-            pml4e.PageFrameNumber = pdpt_pa >> 12;
+            pml4e.PageFrameNumber = PAGE_TO_PFN(pdpt_pa);
 
             if (!NT_SUCCESS(physical::write_physical_address(pml4e_pa, &pml4e, sizeof(pml4e)))) {
                 log("ERROR", "failed to write PML4E");
@@ -227,7 +227,7 @@ namespace hyperspace {
             log("INFO", "created new PDPT at PA 0x%llx", pdpt_pa);
         }
         else {
-            pdpt_pa = pml4e.PageFrameNumber << 12;
+            pdpt_pa = PFN_TO_PAGE(pml4e.PageFrameNumber);
             log("INFO", "using existing PDPT at PA 0x%llx", pdpt_pa);
         }
 
@@ -252,7 +252,7 @@ namespace hyperspace {
             pdpte.Present = 1;
             pdpte.Write = 1;
             pdpte.Supervisor = 0;
-            pdpte.PageFrameNumber = pd_pa >> 12;
+            pdpte.PageFrameNumber = PAGE_TO_PFN(pd_pa);
 
             if (!NT_SUCCESS(physical::write_physical_address(pdpte_pa, &pdpte, sizeof(pdpte)))) {
                 log("ERROR", "failed to write PDPTE");
@@ -263,7 +263,7 @@ namespace hyperspace {
             log("INFO", "created new PD at PA 0x%llx", pd_pa);
         }
         else {
-            pd_pa = pdpte.PageFrameNumber << 12;
+            pd_pa = PFN_TO_PAGE(pdpte.PageFrameNumber);
             log("INFO", "using existing PD at PA 0x%llx", pd_pa);
         }
 
@@ -296,7 +296,7 @@ namespace hyperspace {
                 pde.Present = 1;
                 pde.Write = 1;
                 pde.Supervisor = 0;
-                pde.PageFrameNumber = pt_pa >> 12;
+                pde.PageFrameNumber = PAGE_TO_PFN(pt_pa);
 
                 uintptr_t pde_pa = info->new_pd_pa + current_pd_idx * 8;
                 if (!NT_SUCCESS(physical::write_physical_address(pde_pa, &pde, sizeof(pde)))) {
@@ -315,7 +315,7 @@ namespace hyperspace {
                 return false;
             }
 
-            uintptr_t pt_pa = pde.PageFrameNumber << 12;
+            uintptr_t pt_pa = PFN_TO_PAGE(pde.PageFrameNumber);
 
             // create PTE pointing to copied ntoskrnl page
             // use the allocated pages in order (skip the page table pages)
@@ -347,7 +347,7 @@ namespace hyperspace {
                     pte.Write = 1;
                     pte.Supervisor = 0;
                     pte.ExecuteDisable = 0; // allow execution
-                    pte.PageFrameNumber = pa >> 12;
+                    pte.PageFrameNumber = PAGE_TO_PFN(pa);
 
                     uintptr_t pte_pa = pt_pa + pt_idx * 8;
                     if (!NT_SUCCESS(physical::write_physical_address(pte_pa, &pte, sizeof(pte)))) {
@@ -390,15 +390,13 @@ namespace hyperspace {
             return STATUS_UNSUCCESSFUL;
         }
 
-        globals::ke_flush_entire_tb(TRUE, TRUE);
-        globals::ke_invalidate_all_caches();
-        globals::mi_flush_entire_tb_due_to_attribute_change();
+        mem::flush_tlb();
 
         return STATUS_SUCCESS;
     }
 
-    // main function to create deep copy of ntoskrnl in hyperspace
-    NTSTATUS create_ntoskrnl_deep_copy_in_hyperspace() {
+    // main function to create contextualized ntoskrnl copy in hyperspace
+    NTSTATUS create_contextualized_ntoskrnl() {
         if (!globals::ctx.initialized) {
             log("ERROR", "hyperspace context not initialized");
             return STATUS_UNSUCCESSFUL;
@@ -439,11 +437,9 @@ namespace hyperspace {
         }
 
         // flush TLB
-        globals::ke_flush_entire_tb(TRUE, TRUE);
-        globals::ke_invalidate_all_caches();
-        globals::mi_flush_entire_tb_due_to_attribute_change();
+        mem::flush_tlb();
 
-        log("SUCCESS", "created deep copy of ntoskrnl in hyperspace at 0x%llx",
+        log("SUCCESS", "created contextualized copy of ntoskrnl in hyperspace at 0x%llx",
             g_ntoskrnl_copy_info.hyperspace_base);
 
         // install kernel hooks in hyperspace ctx
@@ -456,8 +452,8 @@ namespace hyperspace {
         return STATUS_SUCCESS;
     }
 
-    // cleanup function (need to rewrite cause im not taking into account 2mb large pages lol, might just map the ntoskrnl copy on a 4kb page in that case)
-    void cleanup_ntoskrnl_deep_copy() {
+    // cleanup contextualized function
+    void cleanup_contextualized_ntoskrnl() {
         // free all allocated pages
         for (size_t i = 0; i < g_ntoskrnl_copy_info.allocated_pages_count; i++) {
             uintptr_t va = g_ntoskrnl_copy_info.allocated_pages[i];
@@ -473,9 +469,7 @@ namespace hyperspace {
 
         globals::memset(&g_ntoskrnl_copy_info, 0, sizeof(g_ntoskrnl_copy_info));
 
-        globals::ke_flush_entire_tb(TRUE, TRUE);
-        globals::ke_invalidate_all_caches();
-        globals::mi_flush_entire_tb_due_to_attribute_change();
+        mem::flush_tlb();
 
         log("INFO", "cleaned up ntoskrnl deep copy");
     }
@@ -527,7 +521,7 @@ namespace hyperspace {
     // find the PML4 self-reference entry in the original CR3
     self_reference_entry_info find_pml4_self_reference_entry(uintptr_t cr3_pa) {
         self_reference_entry_info info = { 0, false, {0} };
-        uintptr_t cr3_pfn = cr3_pa >> 12;
+        uintptr_t cr3_pfn = PAGE_TO_PFN(cr3_pa);
 
         log("INFO", "searching for PML4 self-reference entry (CR3 PFN: 0x%llx)", cr3_pfn);
 
@@ -565,7 +559,7 @@ namespace hyperspace {
 
         // create new self-reference entry pointing to the cloned PML4's physical address
         PML4E_64 new_self_reference_entry = self_reference_info.original_entry;
-        new_self_reference_entry.PageFrameNumber = cloned_pml4_pa >> 12;
+        new_self_reference_entry.PageFrameNumber = PAGE_TO_PFN(cloned_pml4_pa);
 
         // write the updated self-reference entry to the cloned PML4
         globals::memcpy(reinterpret_cast<void*>(self_reference_entry_va), &new_self_reference_entry, sizeof(PML4E_64));
@@ -723,31 +717,74 @@ namespace hyperspace {
             return nullptr;
         }
 
-        // find a non-present PML4E in the appropriate address space based on use_high_address flag
-        uint32_t selected_pml4_index = 0;
-        PML4E_64 pml4e = { 0 };
-
-        // set the search range based on whether high or low address is requested
+        // set the search range, for simplicity sake i'm just going to default to low address allocation within the hyperspace ctx
         uint32_t start_idx = 100;
         uint32_t end_idx = 256;
         const char* space_type = "usermode";
 
+        // count available indices
+        uint32_t available_count = 0;
+        PML4E_64 pml4e = { 0 };
+
         for (uint32_t idx = start_idx; idx < end_idx; idx++) {
             physical::read_physical_address(target_dir_base + idx * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64));
-
             if (!pml4e.Present) {
-                selected_pml4_index = idx;
-                log("INFO", "found non-present PML4E at index: %u", selected_pml4_index);
-                break;
+                available_count++;
             }
         }
 
-        if (selected_pml4_index == 0) {
-            log("ERROR", "failed to find a non-present PML4E in %s space", space_type);
+        if (available_count == 0) {
+            globals::obf_dereference_object(target_process);
+            log("ERROR", "failed to find any non-present PML4E in %s space", space_type);
             return nullptr;
         }
 
-        uintptr_t base_va = page_table::get_pml4e(selected_pml4_index);
+        // generate random seed using current time and process info
+        static bool seeded = false;
+        if (!seeded) {
+            LARGE_INTEGER time;
+            KeQuerySystemTime(&time);
+            globals::srand((unsigned int)(time.QuadPart ^ (uintptr_t)target_process ^ target_pid));
+            seeded = true;
+        }
+
+        // pick a random number between 0 and available_count-1
+        uint32_t target_choice = globals::rand() % available_count;
+
+        // find the target_choice-th available index
+        uint32_t current_choice = 0;
+        uint32_t selected_pml4_index = 0;
+
+        for (uint32_t idx = start_idx; idx < end_idx; idx++) {
+            physical::read_physical_address(target_dir_base + idx * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64));
+            if (!pml4e.Present) {
+                if (current_choice == target_choice) {
+                    selected_pml4_index = idx;
+                    break;
+                }
+                current_choice++;
+            }
+        }
+
+        log("INFO", "found %u available PML4E indices, randomly selected index: %u",
+            available_count, selected_pml4_index);
+
+        // need to modularize this 
+        // additional randomization within the selected PML4E's address space
+        // this adds entropy to the lower bits of the address
+        uint64_t additional_offset = 0;
+        if (use_large_page) {
+            // for large pages, we can randomize PDPTE selection (bits 30-38)
+            // each PDPTE covers 1GB, so we randomize within available PDPTEs
+            additional_offset = (static_cast<uint64_t>(globals::rand() % 512) << 30);
+        }
+        else {
+            // for small pages, randomize at PDE level (bits 21-29) 
+            // each PDE covers 2MB, so we randomize within available PDEs
+            additional_offset = (static_cast<uint64_t>(globals::rand() % 512) << 21);
+        }
+
+        uintptr_t base_va = page_table::get_pml4e(selected_pml4_index) | additional_offset;
 
         log("INFO", "selected base address: 0x%llx", base_va);
 
@@ -759,9 +796,7 @@ namespace hyperspace {
         }
 
         // flush TLB and caches
-        globals::ke_flush_entire_tb(TRUE, TRUE);
-        globals::ke_invalidate_all_caches();
-        globals::mi_flush_entire_tb_due_to_attribute_change();
+        mem::flush_tlb();
 
         log("SUCCESS", "allocated memory in hyperspace at 0x%llx", base_va);
         return reinterpret_cast<void*>(base_va);
@@ -874,8 +909,8 @@ namespace hyperspace {
             // cleanup hyperspace context when target process exits
             cleanup_hyperspace_context(&globals::ctx);
 
-            // clean up ntoskrnl copy in hyperspace ctx (need to rewrite since this bsods, most likely due to calling MmFreeIndependentPages on 2MB contiguous memory, will have to switch to 4kb independent pages for mapping, easier to work with)
-            cleanup_ntoskrnl_deep_copy();
+            // clean up contextualized ntoskrnl copy in hyperspace ctx (need to rewrite since this bsods, most likely due to calling MmFreeIndependentPages on 2MB contiguous memory, will have to switch to 4kb independent pages for mapping, easier to work with)
+            cleanup_contextualized_ntoskrnl();
 
             // unregister the process callback to prevent further notifications
             if (g_process_callback_handle) {
@@ -965,8 +1000,7 @@ namespace hyperspace {
             }
 
             // create shellcode that calls callback function
-            constexpr size_t CALLBACK_SHELL_SIZE = 12;
-            uint8_t shellcode[CALLBACK_SHELL_SIZE] = {
+            uint8_t shellcode[globals::SHELL_SIZE] = {
                 0x48, 0xB8,                   // mov rax, imm64
                 0x00, 0x00, 0x00, 0x00,       // placeholder for lower 32 bits of process_notify_callback_impl
                 0x00, 0x00, 0x00, 0x00,       // placeholder for upper 32 bits of process_notify_callback_impl
@@ -982,7 +1016,7 @@ namespace hyperspace {
             }
 
             // find unused space for callback shellcode
-            void* target_address = page_table::find_unused_space(section_base, section_size, CALLBACK_SHELL_SIZE);
+            void* target_address = page_table::find_unused_space(section_base, section_size, globals::SHELL_SIZE);
             if (!target_address) {
                 log("ERROR", "failed to find unused space for process callback shellcode in legitimate driver");
                 return STATUS_UNSUCCESSFUL;
@@ -992,12 +1026,12 @@ namespace hyperspace {
             *reinterpret_cast<uintptr_t*>(&shellcode[2]) = reinterpret_cast<uintptr_t>(process_notify_callback_impl);
 
             // write shellcode to legitimate driver section
-            globals::memcpy(target_address, shellcode, CALLBACK_SHELL_SIZE);
+            globals::memcpy(target_address, shellcode, globals::SHELL_SIZE);
 
             log("INFO", "process callback shellcode written at addr: 0x%p in legitimate driver", target_address);
 
             // spoof PTE to make the target address executable
-            if (!page_table::spoof_pte_range(reinterpret_cast<uintptr_t>(target_address), CALLBACK_SHELL_SIZE, false)) {
+            if (!page_table::spoof_pte_range(reinterpret_cast<uintptr_t>(target_address), globals::SHELL_SIZE, false)) {
                 log("ERROR", "failed to spoof pte range for process callback");
                 return STATUS_UNSUCCESSFUL;
             }

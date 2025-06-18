@@ -4,7 +4,7 @@
 
 PM-Mapper is an advanced driver and DLL injection tool that uses direct physical memory manipulation to inject code into target processes. By modifying the target process' page tables, it can bypass many common anti-cheat and anti-tampering mechanisms that monitor virtual memory operations via the VAD (Virtual Address Descriptor) tree.
 
-Tested from **Windows 10 20H2 19042** to **Windows 11 24H2 26100.3775** 
+Tested from **Windows 10 20H2 19042** to **Windows 11 24H2 26100.4351 
 
 ## Video Showcase
 
@@ -14,6 +14,7 @@ https://github.com/user-attachments/assets/1f3a2385-42e8-497b-a738-0909e9a77cf6
 - **DLL Execution Methods**:
 	- IAT Hook (`iat`) - Hook Import Address Table to execute DLL entry point (default)
 	- Thread Creation (`thread`) - Create thread (RtlCreateUserThread) for DLL entry point execution
+	- SetWindowsHookEx (`swhk`) - SetWindowsHookEx for DLL entry point execution
 - **Driver Allocation Methods**:
     - System context allocation (`system`)
     - Map driver within ntoskrnl's .data section (`.data`)
@@ -38,6 +39,7 @@ https://github.com/user-attachments/assets/1f3a2385-42e8-497b-a738-0909e9a77cf6
     - Physical memory removal (`mi_remove_physical_memory`) - Removes pages from OS physical memory ranges  
     - Parity error bit (`set_parity_error`) - Returns STATUS_HARDWARE_MEMORY_ERROR on memory copy (default)
     - Lock bit anti-debug (`set_lock_bit`) - Causes system crash if page is copied by MmCopyMemory
+    - Hide translation (`hide_translation`) - Sets the PteAddress field within the MmPfnDatabase entry to 0, this causes MmGetVirtualForPhysical to translate the physical address to the wrong virtual address, 0 in this case
 - **Support for Various Payloads**:
     - Load DLL from disk
     - Use embedded in-memory DLL (MessageBox by default)
@@ -66,6 +68,9 @@ pm-mapper.exe Notepad -d payload.dll
 # Inject embedded DLL using thread execution
 pm-mapper.exe Notepad -e thread
 
+# Inject embedded DLL using SetWindowsHookEx
+pm-mapper.exe Notepad -e swhk
+
 # Inject custom DLL using thread execution
 pm-mapper.exe Notepad -d payload.dll -e thread
 
@@ -76,8 +81,11 @@ pm-mapper.exe Notepad --dry-run -v
 ### Advanced Configuration Examples
 
 ```cmd
-# Thread execution with hyperspace allocation (recommended for stealth)
+# Thread execution with hyperspace allocation
 pm-mapper.exe Notepad -e thread --dll-alloc hyperspace
+
+# SetWindowsHookEx execution with hyperspace allocation
+pm-mapper.exe Notepad -e swhk --dll-alloc hyperspace
 
 # Driver current process allocation and stealthy DLL allocation with IAT
 pm-mapper.exe Notepad -d memory -e iat --driver-alloc current-process --driver-memory large --dll-alloc between-modules --dll-memory normal --hook-module user32.dll --hook-function GetMessageW --target-module notepad.exe
@@ -114,6 +122,7 @@ pm-mapper.exe Notepad -d memory -e thread --dll-alloc hyperspace --dll-hide set_
 - **-e, --execution**: DLL execution method (default: iat)
 	- `iat`: Hook Import Address Table (default)
 	- `thread`: Create remote thread (RtlCreateUserThread) for DLL entry point execution
+	- `swhk`: SetWindowsHookEx for DLL entry point execution
 
 #### Driver Options  
 
@@ -131,6 +140,7 @@ pm-mapper.exe Notepad -d memory -e thread --dll-alloc hyperspace --dll-hide set_
   - `mi_remove_physical_memory`: Removes pages from physical memory ranges
   - `set_parity_error`: Returns STATUS_HARDWARE_MEMORY_ERROR (default)
   - `set_lock_bit`: Anti-debug mechanism - crashes system if page copied
+  - `hide_translation`: MmGetVirtualForPhysical will return the incorrect virtual address that's mapped by the PTE, 0 in this case.
 
 #### DLL Options
 
@@ -150,6 +160,7 @@ pm-mapper.exe Notepad -d memory -e thread --dll-alloc hyperspace --dll-hide set_
   - `mi_remove_physical_memory`: Removes pages from physical memory ranges
   - `set_parity_error`: Returns STATUS_HARDWARE_MEMORY_ERROR (default)
   - `set_lock_bit`: Anti-debug mechanism - crashes system if page copied
+  - `hide_translation`: MmGetVirtualForPhysical will return the incorrect virtual address that's mapped by the PTE, 0 in this case.
 
 #### Hook Options (only used with --execution iat)
 - **--hook-module**: Module to hook in the IAT (default: user32.dll)
@@ -233,7 +244,7 @@ struct _KPROCESS
 
 1. **EPROCESS/KPROCESS Cloning**: Creates a complete clone of the target process's EPROCESS/KPROCESS structure
 2. **DirectoryTableBase Cloning**: Allocates a new PML4 that is a copy of the original process, swaps the cloned KPROCESS's DirectoryTableBase with the new one.
-3. **Deep Copy of Ntoskrnl**: Creates an isolated copy of ntoskrnl.exe within the hyperspace context's PML4 high address, allows for hooking kernel functions within the hyperspace context without triggering PatchGuard. These hooks are not visible globally, only within the hyperspace context.
+3. **Contextualized Copy of Ntoskrnl**: Creates an isolated copy of ntoskrnl.exe within the hyperspace context's PML4 high address, allows for hooking kernel functions within the hyperspace context without triggering PatchGuard. These hooks are not visible globally, only within the hyperspace context.
 4. **Thread Context Switching**: Modifies specific threads to use the hyperspace context by swapping `_KTHREAD.ApcState.Process` to use our cloned KPROCESS. Please note this specific part is very easy to detect and you should look into hiding the thread.
 5. **Isolated Execution**: Code executes in a completely separate memory context invisible to the original process
 
@@ -254,7 +265,7 @@ struct _KPROCESS
 **Note**:
 
 - If your goal is to hook present and render a menu, please note you will have to give the target process's render thread access to the hyperspace context via hyperspace::switch_thread_context_to_hyperspace within the driver project.
-- For simplicity's sake I'm using RtlCreateUserThread for the hyperspace DLL entry point execution.
+- For simplicity's sake I'm using RtlCreateUserThread or SetWindowsHookEx for the hyperspace DLL entry point execution.
 - In my opinion, this method is more ideal for an external window with internal memory access. At this moment there's quite a lot of detection vectors, but with some modifications (such as hiding threads, not triggering thread notify routines on thread creation/deletion and ideally not using process notify routines for cleanup) it can be extremely good.
 - I've only tested this on Notepad and not anything else, if you run into bugs or issues please submit a Pull request.
 - **Hyperspace allocation was designed with thread execution in mind** - while IAT hooking is supported, thread execution is recommended for optimal compatibility.
@@ -270,6 +281,7 @@ The tool employs sophisticated protection mechanisms by manipulating the Physica
 - **Physical Memory Removal (`mi_remove_physical_memory`)**: Removes pages from OS physical memory ranges and clears PFN entries, also returning STATUS_INVALID_ADDRESS
 - **Parity Error (`set_parity_error`)**: Sets MMPFN.e3.ParityError flag to 1, causing MmCopyMemory to return STATUS_HARDWARE_MEMORY_ERROR (0xC0000709) - Default option
 - **Lock Bit Anti-Debug (`set_lock_bit`)**: Sets MMPFN.u2.LockBit to 1. It's an anti-debug mechanism that causes the CPU to yield followed by a system crash if an attempt is made to copy the page via MmCopyMemory.
+- **Hide Translation (`hide_translation`)**: Sets MMPFN.PteAddress to 0. This causes MmGetVirtualForPhysical to return 0 for the virtual address that's mapped by the PTE. Ideally you should spoof the PteAddress field to another pfn's PteAddress field to make it look more legitimate.
 
 ### Driver Allocation Techniques
 

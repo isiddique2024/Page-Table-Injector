@@ -12,6 +12,7 @@ class injector_t {
 public:     
     enum class execution_method {
     IAT_HOOK,
+    SET_WINDOWS_HOOK,
     THREAD
     };
 
@@ -21,6 +22,63 @@ private:
     const char* hook_function = "GetMessageW";
     const wchar_t* target_module = L"";
     execution_method exec_method = execution_method::IAT_HOOK;
+
+    std::uint8_t dll_main_shellcode[92] = {
+        // Function prologue - reserve stack space
+        0x48, 0x83, 0xEC, 0x38,                                         // sub rsp, 0x38 (reserve 56 bytes on stack)
+
+        // Load address of data structure (will be patched)
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,     // mov rax, struct_addr (patched at runtime)
+
+        // Save the structure pointer on stack
+        0x48, 0x89, 0x44, 0x24, 0x20,             // mov [rsp+0x20], rax
+
+        // Check if already executed (status != 0)
+        0x48, 0x8B, 0x44, 0x24, 0x20,             // mov rax, [rsp+0x20]
+        0x83, 0x38, 0x00,                         // cmp dword ptr [rax], 0
+        0x75, 0x39,                               // jne exit (skip if already executed)
+
+        // Set status to 1 (executing)
+        0x48, 0x8B, 0x44, 0x24, 0x20,             // mov rax, [rsp+0x20]
+        0xC7, 0x00, 0x01, 0x00, 0x00, 0x00,       // mov dword ptr [rax], 1
+
+        // Get DLL entry point address from structure
+        0x48, 0x8B, 0x44, 0x24, 0x20,             // mov rax, [rsp+0x20]
+        0x48, 0x8B, 0x40, 0x08,                   // mov rax, [rax+8] (fn_dll_main)
+        0x48, 0x89, 0x44, 0x24, 0x28,             // mov [rsp+0x28], rax
+
+        // Prepare DllMain parameters (follows x64 calling convention)
+        0x45, 0x33, 0xC0,                         // xor r8d, r8d (lpReserved = NULL)
+        0xBA, 0x01, 0x00, 0x00, 0x00,             // mov edx, 1 (fdwReason = DLL_PROCESS_ATTACH)
+
+        // Load DLL base address from structure (first parameter)
+        0x48, 0x8B, 0x44, 0x24, 0x20,             // mov rax, [rsp+0x20]
+        0x48, 0x8B, 0x48, 0x10,                   // mov rcx, [rax+0x10] (DLL base)
+
+        // Call the DLL entry point function
+        0xFF, 0x54, 0x24, 0x28,                   // call qword ptr [rsp+0x28]
+
+        // Set status to 2 (completed)
+        0x48, 0x8B, 0x44, 0x24, 0x20,             // mov rax, [rsp+0x20]
+        0xC7, 0x00, 0x02, 0x00, 0x00, 0x00,       // mov dword ptr [rax], 2
+
+        // Function epilogue and return
+        0x48, 0x83, 0xC4, 0x38,                   // add rsp, 0x38 (restore stack)
+        0xC3,                                     // ret (return to caller)
+
+        // Padding/alignment
+        0xCC                                      // int3 (breakpoint, used as padding)
+    };
+
+    const unsigned long shell_data_offset = 0x6;
+
+    typedef struct _execution_context {
+        uint32_t state;
+        std::uintptr_t target_function;
+        HINSTANCE base_address;
+    } execution_context, * pexecution_context;
+
+    const uintptr_t total_size = sizeof(dll_main_shellcode) + sizeof(execution_context);
 
     [[nodiscard]] __forceinline auto get_nt_headers(const std::uintptr_t image_base) const -> IMAGE_NT_HEADERS* {
         const auto dos_header = reinterpret_cast<IMAGE_DOS_HEADER*>(image_base);
@@ -102,11 +160,10 @@ private:
     }
 
     [[nodiscard]] __forceinline bool map_sections(std::uint32_t pid, void* module_base, void* local_image,
-        IMAGE_NT_HEADERS* nt_header, bool use_large_pages) const {
+        IMAGE_NT_HEADERS* nt_header) const {
         auto section = IMAGE_FIRST_SECTION(nt_header);
         auto num_sections = nt_header->FileHeader.NumberOfSections;
         log("INFO", "number of sections to map: %u", num_sections);
-        log("INFO", "using %s pages", use_large_pages ? "large" : "regular");
 
         // calculate total size needed and find largest section virtual address + size
         std::size_t total_mapping_size = 0;
@@ -126,15 +183,7 @@ private:
         }
 
         // calculate final buffer size based on page type
-        std::size_t buffer_size;
-        if (use_large_pages) {
-            constexpr size_t LARGE_PAGE_MASK = nt::LARGE_PAGE_SIZE - 1;
-            buffer_size = (total_mapping_size + LARGE_PAGE_MASK) & ~LARGE_PAGE_MASK;
-            log("INFO", "original size: %zu bytes, aligned size: %zu bytes", total_mapping_size, buffer_size);
-        }
-        else {
-            buffer_size = total_mapping_size;
-        }
+        std::size_t buffer_size = total_mapping_size;
 
         // create buffer and zero it
         std::vector<std::uint8_t> combined_buffer(buffer_size, 0);
@@ -155,32 +204,15 @@ private:
 
         log("INFO", "prepared %u sections in buffer", mapped_sections);
 
-        // write buffer to target process memory
-        if (use_large_pages) {
-            // split into 2MB chunks for large pages
-            for (size_t offset = 0; offset < buffer_size; offset += nt::LARGE_PAGE_SIZE) {
-                size_t chunk_size = min(nt::LARGE_PAGE_SIZE, buffer_size - offset);
-                log("INFO", "writing large page chunk at offset 0x%zx, size: %zu bytes", offset, chunk_size);
+        // single write for 4KB pages
+        log("INFO", "mapping all valid sections at once");
+        log("INFO", "destination: 0x%p, size: %zu bytes", module_base, buffer_size);
 
-                // Write without checking return value
-                driver->write_virtual_memory(
-                    pid,
-                    reinterpret_cast<std::uintptr_t>(module_base) + offset,
-                    combined_buffer.data() + offset,
-                    chunk_size);
-            }
-        }
-        else {
-            // single write for 4KB pages
-            log("INFO", "mapping all valid sections at once");
-            log("INFO", "destination: 0x%p, size: %zu bytes", module_base, buffer_size);
-
-            driver->write_virtual_memory(
-                pid,
-                reinterpret_cast<std::uintptr_t>(module_base),
-                combined_buffer.data(),
-                buffer_size);
-        }
+        driver->write_virtual_memory(
+            pid,
+            reinterpret_cast<std::uintptr_t>(module_base),
+            combined_buffer.data(),
+            buffer_size);
 
         log("INFO", "successfully mapped %u valid sections", mapped_sections);
         return true;
@@ -324,77 +356,19 @@ private:
         return 0;
     }
 
-    bool hijack_via_iat_hook(uint32_t pid, uint32_t tid, void* alloc_base, DWORD entry_point, driver_t::alloc_mode alloc_mode)
+    bool execute_via_iat_hook(uint32_t pid, uint32_t tid, void* alloc_base, DWORD entry_point, driver_t::alloc_mode alloc_mode)
     {
-
-        std::uint8_t dll_main_shellcode[92] = {
-            // Function prologue - reserve stack space
-            0x48, 0x83, 0xEC, 0x38,                                         // sub rsp, 0x38 (reserve 56 bytes on stack)
-
-            // Load address of data structure (will be patched)
-            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,     // mov rax, struct_addr (patched at runtime)
-
-            // Save the structure pointer on stack
-            0x48, 0x89, 0x44, 0x24, 0x20,             // mov [rsp+0x20], rax
-
-            // Check if already executed (status != 0)
-            0x48, 0x8B, 0x44, 0x24, 0x20,             // mov rax, [rsp+0x20]
-            0x83, 0x38, 0x00,                         // cmp dword ptr [rax], 0
-            0x75, 0x39,                               // jne exit (skip if already executed)
-
-            // Set status to 1 (executing)
-            0x48, 0x8B, 0x44, 0x24, 0x20,             // mov rax, [rsp+0x20]
-            0xC7, 0x00, 0x01, 0x00, 0x00, 0x00,       // mov dword ptr [rax], 1
-
-            // Get DLL entry point address from structure
-            0x48, 0x8B, 0x44, 0x24, 0x20,             // mov rax, [rsp+0x20]
-            0x48, 0x8B, 0x40, 0x08,                   // mov rax, [rax+8] (fn_dll_main)
-            0x48, 0x89, 0x44, 0x24, 0x28,             // mov [rsp+0x28], rax
-
-            // Prepare DllMain parameters (follows x64 calling convention)
-            0x45, 0x33, 0xC0,                         // xor r8d, r8d (lpReserved = NULL)
-            0xBA, 0x01, 0x00, 0x00, 0x00,             // mov edx, 1 (fdwReason = DLL_PROCESS_ATTACH)
-
-            // Load DLL base address from structure (first parameter)
-            0x48, 0x8B, 0x44, 0x24, 0x20,             // mov rax, [rsp+0x20]
-            0x48, 0x8B, 0x48, 0x10,                   // mov rcx, [rax+0x10] (DLL base)
-
-            // Call the DLL entry point function
-            0xFF, 0x54, 0x24, 0x28,                   // call qword ptr [rsp+0x28]
-
-            // Set status to 2 (completed)
-            0x48, 0x8B, 0x44, 0x24, 0x20,             // mov rax, [rsp+0x20]
-            0xC7, 0x00, 0x02, 0x00, 0x00, 0x00,       // mov dword ptr [rax], 2
-
-            // Function epilogue and return
-            0x48, 0x83, 0xC4, 0x38,                   // add rsp, 0x38 (restore stack)
-            0xC3,                                     // ret (return to caller)
-
-            // Padding/alignment
-            0xCC                                      // int3 (breakpoint, used as padding)
-        };
-
-        const unsigned long shell_data_offset = 0x6;
-
         std::uintptr_t main_module_base = driver->get_module_base(pid, target_module);
 
-        if (main_module_base == 0) {
+        if (!main_module_base) {
             return false;
         }
 
         std::uintptr_t iat_entry = find_iat_entry(pid, main_module_base, hook_module, hook_function);
 
-        if (iat_entry == 0) {
+        if (!iat_entry ) {
             return false;
         }
-
-        typedef struct _main_struct {
-            uint32_t status;
-            std::uintptr_t fn_dll_main;
-            HINSTANCE dll_base;
-        } main_struct, * pmain_struct;
-
-        DWORD shell_size = sizeof(dll_main_shellcode) + sizeof(main_struct);
 
         const auto remote_shellcode = driver->allocate_independent_pages(
             GetCurrentProcessId(),
@@ -405,14 +379,14 @@ private:
             alloc_mode
         );
 
-        if (remote_shellcode == NULL) {
+        if (!remote_shellcode) {
             return false;
         }
 
-        if(alloc_mode == driver->ALLOC_AT_HYPERSPACE)
+        if (alloc_mode == driver->ALLOC_AT_HYPERSPACE)
             driver->swap_context_to_hyperspace(tid);
 
-        void* local_alloc = VirtualAlloc(NULL, shell_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        void* local_alloc = VirtualAlloc(NULL, total_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!local_alloc) {
             return false;
         }
@@ -423,24 +397,24 @@ private:
 
         *(std::uintptr_t*)((std::uintptr_t)local_alloc + shell_data_offset) = shell_data_addr;
 
-        pmain_struct main_data = (pmain_struct)((std::uintptr_t)local_alloc + sizeof(dll_main_shellcode));
-        main_data->status = 0;
-        main_data->dll_base = (HINSTANCE)alloc_base;
-        main_data->fn_dll_main = (std::uintptr_t)alloc_base + entry_point;
+        auto ctx = (pexecution_context)((std::uintptr_t)local_alloc + sizeof(dll_main_shellcode));
+        ctx->state = 0;
+        ctx->base_address = (HINSTANCE)alloc_base;
+        ctx->target_function = (std::uintptr_t)alloc_base + entry_point;
 
-        driver->write_virtual_memory(pid, (std::uintptr_t)remote_shellcode, local_alloc, shell_size);
+        driver->write_virtual_memory(pid, (std::uintptr_t)remote_shellcode, local_alloc, total_size);
 
         void* original_ptr = nullptr;
         driver->read_virtual_memory(pid, iat_entry, &original_ptr, sizeof(uintptr_t));
 
         driver->write_virtual_memory(pid, iat_entry, &remote_shellcode, sizeof(uintptr_t));
 
-        main_struct status_check = { 0 };
+        execution_context status_check = { 0 };
 
         const int max_wait_cycles = 1500; // 15 seconds at 10ms per cycle
         int wait_cycles = 0;
 
-        while (status_check.status != 2 && wait_cycles < max_wait_cycles) {
+        while (status_check.state != 2 && wait_cycles < max_wait_cycles) {
             Sleep(10);
             driver->read_virtual_memory(pid, shell_data_addr, &status_check, sizeof(std::uintptr_t));
             wait_cycles++;
@@ -448,14 +422,83 @@ private:
 
         driver->write_virtual_memory(pid, iat_entry, &original_ptr, sizeof(std::uintptr_t));
 
+        if (alloc_mode == driver->ALLOC_AT_HYPERSPACE)
+            driver->restore_context(tid);
+
         std::uint8_t zero_shell[sizeof(dll_main_shellcode)] = { 0 };
         driver->write_virtual_memory(pid, (std::uintptr_t)remote_shellcode, zero_shell, sizeof(zero_shell));
 
         VirtualFree(local_alloc, 0, MEM_RELEASE);
 
-        return status_check.status == 2; // Return success based on status
+        return status_check.state == 2; // return success based on state
     }
 
+    bool execute_via_swhk(uint32_t pid, uint32_t tid, void* alloc_base, DWORD entry_point, driver_t::alloc_mode alloc_mode)
+    {
+        const auto system_lib = reinterpret_cast<HMODULE>(shadowcall<HMODULE>("LoadLibraryW", L"ntdll.dll"));
+
+        if (!system_lib) {
+            return false;
+        }
+
+        const auto remote_shellcode = driver->allocate_independent_pages(
+            GetCurrentProcessId(),
+            pid,
+            tid,
+            0x1000,
+            0,
+            alloc_mode
+        );
+
+        if (!remote_shellcode) {
+            return false;
+        }
+
+        if (alloc_mode == driver->ALLOC_AT_HYPERSPACE)
+            driver->swap_context_to_hyperspace(tid);
+
+        const auto local_alloc = VirtualAlloc(NULL, total_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+
+        if (!local_alloc) {
+            return false;
+        }
+
+        memcpy(local_alloc, &dll_main_shellcode, sizeof(dll_main_shellcode));
+        const auto context_address = (uintptr_t)remote_shellcode + sizeof(dll_main_shellcode);
+        *(uintptr_t*)((uintptr_t)local_alloc + shell_data_offset) = context_address;
+
+        auto ctx = (execution_context*)((uintptr_t)local_alloc + sizeof(dll_main_shellcode));
+        ctx->state = 0;
+        ctx->base_address = (HINSTANCE)alloc_base;
+        ctx->target_function = ((uintptr_t)alloc_base + entry_point);
+
+        driver->write_virtual_memory(pid, (std::uintptr_t)remote_shellcode, local_alloc, total_size);
+        const auto message_hook = SetWindowsHookEx(WH_GETMESSAGE, (HOOKPROC)remote_shellcode, system_lib, tid);
+
+        if (message_hook == NULL) {
+            VirtualFree(local_alloc, 0, MEM_RELEASE);
+            return false;
+        }
+
+        while (ctx->state != 2)
+        {
+            PostThreadMessageA(tid, WM_NULL, 0, 0);
+            driver->read_virtual_memory(pid, context_address, (PVOID)ctx, sizeof(execution_context));
+            Sleep(10);
+        }
+
+        UnhookWindowsHookEx(message_hook);
+
+        if (alloc_mode == driver->ALLOC_AT_HYPERSPACE)
+            driver->restore_context(tid);
+
+        std::uint8_t cleanup_buffer[sizeof(dll_main_shellcode)] = { 0 };
+        driver->write_virtual_memory(pid, (std::uintptr_t)remote_shellcode, cleanup_buffer, sizeof(cleanup_buffer));
+
+        VirtualFree(local_alloc, 0, MEM_RELEASE);
+
+        return ctx->state == 2;
+    }
     bool execute_via_thread(uint32_t pid, uint32_t tid, void* alloc_base, DWORD entry_point, driver_t::alloc_mode alloc_mode)
     {
         log("INFO", "executing DLL via thread creation");
@@ -468,8 +511,6 @@ private:
         log("SUCCESS", "DLL executed successfully via thread");
         return true;
     }
-
-
 public:
 
 
@@ -479,11 +520,21 @@ public:
         this->target_module = main_module;
     }
 
+
+    const char* get_method_name(execution_method method) {
+        switch (method) {
+        case execution_method::IAT_HOOK: return "IAT_HOOK";
+        case execution_method::SET_WINDOWS_HOOK: return "SET_WINDOWS_HOOK";
+        case execution_method::THREAD: return "THREAD";
+        default: return "UNKNOWN";
+        }
+    }
+
     void set_execution_method(execution_method method) {
         this->exec_method = method;
-        log("INFO", "execution method set to: %s",
-            (method == execution_method::IAT_HOOK) ? "IAT_HOOK" : "THREAD");
+        log("INFO", "execution method set to: %s", get_method_name(method));
     }
+
 
     execution_method get_execution_method() const {
         return this->exec_method;
@@ -524,7 +575,7 @@ public:
 
         log("SUCCESS", "resolved imports");
 
-        if (!map_sections(pid, dll_alloc_base, buffer, nt_header, 0)) {  // memory_type
+        if (!map_sections(pid, dll_alloc_base, buffer, nt_header)) {
             log("ERROR", "failed to map sections");
             return false;
         }
@@ -532,21 +583,24 @@ public:
         log("SUCCESS", "resolved mapped sections");
 
         bool execution_success = false;
-        if (exec_method == execution_method::THREAD) {
+        switch (exec_method) {
+        case execution_method::THREAD:
             execution_success = execute_via_thread(pid, tid, dll_alloc_base, nt_header->OptionalHeader.AddressOfEntryPoint, alloc_mode);
-        }
-        else {
-            execution_success = hijack_via_iat_hook(pid, tid, dll_alloc_base, nt_header->OptionalHeader.AddressOfEntryPoint, alloc_mode);
+            break;
+        case execution_method::SET_WINDOWS_HOOK:
+            execution_success = execute_via_swhk(pid, tid, dll_alloc_base, nt_header->OptionalHeader.AddressOfEntryPoint, alloc_mode);
+            break;
+        case execution_method::IAT_HOOK:
+            execution_success = execute_via_iat_hook(pid, tid, dll_alloc_base, nt_header->OptionalHeader.AddressOfEntryPoint, alloc_mode);
+            break;
         }
 
         if (!execution_success) {
-            log("ERROR", "failed to execute DLL using %s method",
-                (exec_method == execution_method::IAT_HOOK) ? "IAT_HOOK" : "THREAD");
+            log("ERROR", "failed to execute DLL using %s method", get_method_name(exec_method));
             return false;
         }
 
-        log("SUCCESS", "DLL injection completed successfully using %s method",
-            (exec_method == execution_method::IAT_HOOK) ? "IAT_HOOK" : "THREAD");
+        log("SUCCESS", "DLL injection completed successfully using %s method", get_method_name(exec_method));
 
         return true;
     }

@@ -97,14 +97,23 @@ namespace page_table {
 				return STATUS_UNSUCCESSFUL;
 			}
 
-			// both PTE and PDE have PageFrameNumber in the same position, so we can use either
-			PTE_64 entry = { 0 };
-			if (!intel_driver::ReadMemory(device_handle, pte_va, &entry, use_large_page ? sizeof(PDE_64) : sizeof(PTE_64))) {
-				Log(L"[-] Failed to read " << (use_large_page ? L"PDE" : L"PTE") << std::endl);
-				return STATUS_UNSUCCESSFUL;
+			if (use_large_page) {
+				PDE_2MB_64 entry = { 0 };
+				if (!intel_driver::ReadMemory(device_handle, pte_va, &entry, sizeof(PDE_2MB_64))) {
+					Log(L"[-] Failed to read 2MB PDE" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+				page_frame_number = entry.PageFrameNumber;
+			}
+			else {
+				PTE_64 entry = { 0 };
+				if (!intel_driver::ReadMemory(device_handle, pte_va, &entry, sizeof(PTE_64))) {
+					Log(L"[-] Failed to read PTE" << std::endl);
+					return STATUS_UNSUCCESSFUL;
+				}
+				page_frame_number = entry.PageFrameNumber;
 			}
 
-			page_frame_number = entry.PageFrameNumber;
 			if (!page_frame_number) {
 				Log(L"[-] PFN is null" << std::endl);
 				return STATUS_UNSUCCESSFUL;
@@ -203,9 +212,9 @@ namespace page_table {
 			}
 
 			if (use_large_page) {
-				// read and setup PD for large page
-				PDE_64 pde = { 0 };
-				if (!read_physical_address(device_handle, PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64))) {
+				// read and setup 2MB PD for large page
+				PDE_2MB_64 pde = { 0 };
+				if (!read_physical_address(device_handle, PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_2MB_64), &pde, sizeof(PDE_2MB_64))) {
 					Log(L"[-] Failed to read PDE" << std::endl);
 					return STATUS_UNSUCCESSFUL;
 				}
@@ -219,7 +228,7 @@ namespace page_table {
 					pde.ExecuteDisable = 0;
 					pde.PageFrameNumber = page_frame_number;
 
-					if (!write_physical_address(device_handle, PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_64), &pde, sizeof(PDE_64))) {
+					if (!write_physical_address(device_handle, PFN_TO_PAGE(pdpte.PageFrameNumber) + helper.AsIndex.Pd * sizeof(PDE_2MB_64), &pde, sizeof(PDE_2MB_64))) {
 						Log(L"[-] Failed to write PDE" << std::endl);
 						return STATUS_UNSUCCESSFUL;
 					}
@@ -325,6 +334,14 @@ namespace page_table {
 			return nullptr;
 		}
 
+		// Initialize random seed (only once per process)
+		static bool rand_initialized = false;
+		if (!rand_initialized) {
+			// Use a combination of time and process ID for better entropy
+			srand(static_cast<unsigned int>(time(nullptr)) ^ GetCurrentProcessId());
+			rand_initialized = true;
+		}
+
 		// find a non-present PML4E in the appropriate address space
 		uint32_t selected_pml4_index = 0;
 		PML4E_64 pml4e = { 0 };
@@ -334,33 +351,57 @@ namespace page_table {
 		uint32_t end_idx = use_high_address ? 511 : 256;
 		const char* space_type = use_high_address ? "kernel" : "usermode";
 
-		bool found = false;
+		// build a list of available (non-present) PML4 indices
+		std::vector<uint32_t> available_indices;
+		available_indices.reserve(end_idx - start_idx);
+
 		for (uint32_t idx = start_idx; idx < end_idx; idx++) {
 			if (read_physical_address(device_handle, target_dir_base + idx * sizeof(PML4E_64), &pml4e, sizeof(PML4E_64))) {
 				if (!pml4e.Present) {
-					selected_pml4_index = idx;
-					Log(L"[+] Found non-present PML4E at index: " << selected_pml4_index << std::endl);
-					found = true;
-					break;
+					available_indices.push_back(idx);
 				}
 			}
 		}
 
-		if (!found) {
-			Log(L"[-] Failed to find a non-present PML4E in " << space_type << " space" << std::endl);
+		if (available_indices.empty()) {
+			Log(L"[-] Failed to find any non-present PML4E in " << space_type << " space" << std::endl);
 			return nullptr;
+		}
+
+		Log(L"[+] Found " << available_indices.size() << " available PML4 entries in " << space_type << " space" << std::endl);
+
+		// randomly select one of the available indices
+		int random_selection = rand() % available_indices.size();
+		selected_pml4_index = available_indices[random_selection];
+
+		Log(L"[+] Randomly selected PML4E at index: " << selected_pml4_index
+			<< " (selection " << random_selection << " out of " << available_indices.size() << " available)" << std::endl);
+
+		// additional randomization within the selected PML4E's address space
+		// this adds entropy to the lower bits of the address
+		uint64_t additional_offset = 0;
+		if (use_large_page) {
+			// for large pages, we can randomize PDPTE selection (bits 30-38)
+			// each PDPTE covers 1GB, so we randomize within available PDPTEs
+			additional_offset = (static_cast<uint64_t>(rand() % 512) << 30);
+		}
+		else {
+			// for small pages, randomize at PDE level (bits 21-29) 
+			// each PDE covers 2MB, so we randomize within available PDEs
+			additional_offset = (static_cast<uint64_t>(rand() % 512) << 21);
 		}
 
 		// calc the base virtual address using the selected PML4E index
 		uintptr_t base_va;
 		if (use_high_address) {
-			base_va = 0xFFFF000000000000ULL | page_table::get_pml4e(selected_pml4_index);
+			base_va = 0xFFFF000000000000ULL | page_table::get_pml4e(selected_pml4_index) | additional_offset;
 		}
 		else {
-			base_va = page_table::get_pml4e(selected_pml4_index);
+			base_va = page_table::get_pml4e(selected_pml4_index) | additional_offset;
 		}
 
-		Log(L"[+] Selected base address: 0x" << std::hex << base_va << std::endl);
+		Log(L"[+] Selected base address: 0x" << std::hex << base_va
+			<< L" (PML4: " << selected_pml4_index << L", offset: 0x" << additional_offset << L")" << std::endl);
 
 		// write page tables
 		auto write_pt_status = write_page_tables(device_handle, target_dir_base, base_va, page_count, use_large_page);

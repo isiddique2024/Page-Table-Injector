@@ -245,6 +245,7 @@ __forceinline uint64_t kdmapper::MapDriver(HANDLE iqvw64e_device_handle, BYTE* d
 
 		struct pdb_offsets {
 			// driver vars
+			uintptr_t NtoskrnlBase;
 			uintptr_t DriverAllocBase;
 			uintptr_t DriverSize;
 			uint32_t DriverHideType;
@@ -338,6 +339,8 @@ __forceinline uint64_t kdmapper::MapDriver(HANDLE iqvw64e_device_handle, BYTE* d
 			uintptr_t strncmp;
 			uintptr_t strlen;
 			uintptr_t _wcsicmp;
+			uintptr_t rand;
+			uintptr_t srand;
 
 			// offsets
 
@@ -371,6 +374,7 @@ __forceinline uint64_t kdmapper::MapDriver(HANDLE iqvw64e_device_handle, BYTE* d
 		}
 
 		pdb_offsets offsets = {
+			ntoskrnl_base,
 			kernel_image_base,
 			alloc_size,
 			driver_hide_type,
@@ -463,6 +467,8 @@ __forceinline uint64_t kdmapper::MapDriver(HANDLE iqvw64e_device_handle, BYTE* d
 			ntoskrnl_base + EzPdbGetRva(&pdb, "strncmp"),
 			ntoskrnl_base + EzPdbGetRva(&pdb, "strlen"),
 			ntoskrnl_base + EzPdbGetRva(&pdb, "wcsicmp"),
+			ntoskrnl_base + EzPdbGetRva(&pdb, "rand"),
+			ntoskrnl_base + EzPdbGetRva(&pdb, "srand"),
 
 			// struct offsets
 			EzPdbGetStructPropertyOffset(&pdb, "_EPROCESS", L"ActiveProcessLinks"),
