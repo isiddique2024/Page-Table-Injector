@@ -1,10 +1,10 @@
-# Physical Memory Manual Mapper (PM-Mapper)
+# Page Table Injector (PT-Injector)
 
 ## Overview
 
-PM-Mapper is an advanced driver and DLL injection tool that uses direct physical memory manipulation to inject code into target processes. By modifying the target process' page tables, it can bypass many common anti-cheat and anti-tampering mechanisms that monitor virtual memory operations via the VAD (Virtual Address Descriptor) tree.
+PT-Injector is an advanced driver and DLL injection tool that uses direct physical memory manipulation to inject code into target processes. By modifying the target process' page tables, it can bypass many common anti-cheat and anti-tampering mechanisms that monitor virtual memory operations via the VAD (Virtual Address Descriptor) tree.
 
-Tested from **Windows 10 20H2 19042** to **Windows 11 24H2 26100.4351**
+Tested from **Windows 10 20H2 19042** to **Windows 11 24H2 26100.6584**
 
 ## Video Showcase
 
@@ -53,60 +53,60 @@ https://github.com/user-attachments/assets/1f3a2385-42e8-497b-a738-0909e9a77cf6
 ## Usage
 
 ```
-pm-mapper.exe <target> [OPTIONS]
+pt-injector.exe <target> [OPTIONS]
 ```
 
 ### Basic Usage Examples
 
 ```cmd
 # Inject embedded DLL into Notepad using default settings (IAT hook)
-pm-mapper.exe Notepad
+pt-injector.exe Notepad
 
 # Inject custom DLL using IAT hook (default)
-pm-mapper.exe Notepad -d payload.dll
+pt-injector.exe Notepad -d payload.dll
 
 # Inject embedded DLL using thread execution
-pm-mapper.exe Notepad -e thread
+pt-injector.exe Notepad -e thread
 
 # Inject embedded DLL using SetWindowsHookEx
-pm-mapper.exe Notepad -e swhk
+pt-injector.exe Notepad -e swhk
 
 # Inject custom DLL using thread execution
-pm-mapper.exe Notepad -d payload.dll -e thread
+pt-injector.exe Notepad -d payload.dll -e thread
 
 # Preview configuration without executing
-pm-mapper.exe Notepad --dry-run -v
+pt-injector.exe Notepad --dry-run -v
 ```
 
 ### Advanced Configuration Examples
 
 ```cmd
 # Thread execution with hyperspace allocation
-pm-mapper.exe Notepad -e thread --dll-alloc hyperspace
+pt-injector.exe Notepad -e thread --dll-alloc hyperspace
 
 # SetWindowsHookEx execution with hyperspace allocation
-pm-mapper.exe Notepad -e swhk --dll-alloc hyperspace
+pt-injector.exe Notepad -e swhk --dll-alloc hyperspace
 
 # Driver current process allocation and stealthy DLL allocation with IAT
-pm-mapper.exe Notepad -d memory -e iat --driver-alloc current-process --driver-memory large --dll-alloc between-modules --dll-memory normal --hook-module user32.dll --hook-function GetMessageW --target-module notepad.exe
+pt-injector.exe Notepad -d memory -e iat --driver-alloc current-process --driver-memory large --dll-alloc between-modules --dll-memory normal --hook-module user32.dll --hook-function GetMessageW --target-module notepad.exe
 
 # Thread execution with custom allocation
-pm-mapper.exe Notepad -d memory -e thread --driver-alloc current-process --dll-alloc low-address --dll-memory normal
+pt-injector.exe Notepad -d memory -e thread --driver-alloc current-process --dll-alloc low-address --dll-memory normal
 
 # System-level allocation with IAT
-pm-mapper.exe Notepad -d memory -e iat --driver-alloc system --dll-alloc inside-main --dll-memory normal --hook-module user32.dll --hook-function GetMessageW --target-module notepad.exe
+pt-injector.exe Notepad -d memory -e iat --driver-alloc system --dll-alloc inside-main --dll-memory normal --hook-module user32.dll --hook-function GetMessageW --target-module notepad.exe
 
 # Driver and DLL large page allocation with thread execution
-pm-mapper.exe Notepad -d memory -e thread --driver-alloc current-process --driver-memory large --dll-alloc low-address --dll-memory large
+pt-injector.exe Notepad -d memory -e thread --driver-alloc current-process --driver-memory large --dll-alloc low-address --dll-memory large
 
 # Advanced stealth with custom hide options (IAT)
-pm-mapper.exe Notepad -d memory -e iat --driver-hide set_parity_error --dll-hide set_parity_error --driver-memory large --dll-alloc between-modules
+pt-injector.exe Notepad -d memory -e iat --driver-hide set_parity_error --dll-hide set_parity_error --driver-memory large --dll-alloc between-modules
 
 # Anti-debug configuration (WARNING: Will crash system if page is copied via MmCopyMemory)
-pm-mapper.exe Notepad -d memory --driver-hide set_lock_bit --dll-hide set_lock_bit
+pt-injector.exe Notepad -d memory --driver-hide set_lock_bit --dll-hide set_lock_bit
 
 # Hyperspace with advanced hiding and thread execution
-pm-mapper.exe Notepad -d memory -e thread --dll-alloc hyperspace --dll-hide set_parity_error
+pt-injector Notepad -d memory -e thread --dll-alloc hyperspace --dll-hide set_parity_error
 ```
 
 ## Parameters
@@ -173,19 +173,19 @@ pm-mapper.exe Notepad -d memory -e thread --dll-alloc hyperspace --dll-hide set_
 
 ### Help and Examples
 
-Use `pm-mapper.exe --help` to see comprehensive usage information with examples.
+Use `pt-injector.exe --help` to see comprehensive usage information with examples.
 
 **Note**: Use quotes around window names containing spaces (e.g., "Notepad")
 
 ## Technical Details
 
-PM-Mapper operates at a kernel level using direct page table manipulation instead of traditional memory APIs such as ZwAllocateVirtualMemory/NtAllocateVirtualMemory. This approach makes detection significantly more difficult as it bypasses common monitoring mechanisms that operate at the virtual memory level.
+PT-Injector operates at a kernel level using direct page table manipulation instead of traditional memory APIs such as ZwAllocateVirtualMemory/NtAllocateVirtualMemory. This approach makes detection significantly more difficult as it bypasses common monitoring mechanisms that operate using the Virtual Address Descriptor (VAD) tree.
 
 ### Pure Physical Memory Access
 
 A key distinguishing feature of this project is its exclusive use of physical memory operations:
 
-- **No Process Context Switching**: Unlike traditional DLL injectors, PM-Mapper never uses KeStackAttachProcess to attach to the target process context
+- **No Process Context Switching**: Unlike traditional DLL injectors, PT-Injector never uses KeStackAttachProcess to attach to the target process context
 - **Direct Physical Memory Manipulation**: All memory operations are performed through direct physical memory access
 - **Page Table Modification**: Memory allocation is achieved by directly manipulating page tables at the physical level
 - **Cross-Context Operation**: Can modify any process's memory without ever entering its execution context
@@ -194,7 +194,7 @@ This approach makes the injection practically invisible to security solutions th
 
 ### Hyperspace Allocation Technique
 
-The hyperspace allocation method represents one of the more advanced stealth techniques in PM-Mapper:
+The hyperspace allocation method represents one of the more advanced stealth techniques in PT-Injector:
 
 #### What is Hyperspace?
 
@@ -248,6 +248,8 @@ struct _KPROCESS
 4. **Thread Context Switching**: Modifies specific threads to use the hyperspace context by swapping `_KTHREAD.ApcState.Process` to use our cloned KPROCESS. Please note this specific part is very easy to detect and you should look into hiding the thread.
 5. **Isolated Execution**: Code executes in a completely separate memory context invisible to the original process
 
+<img width="1920" height="969" alt="image" src="https://github.com/user-attachments/assets/a38802a5-01ef-491b-9b58-195d2c511dce" />
+
 **Key Advantages:**
 
 - **Complete Isolation**: Modifications are only visible within the hyperspace context
@@ -266,8 +268,8 @@ struct _KPROCESS
 
 - If your goal is to hook present and render a menu, please note you will have to give the target process's render thread access to the hyperspace context via hyperspace::switch_thread_context_to_hyperspace within the driver project.
 - For simplicity's sake I'm using RtlCreateUserThread or SetWindowsHookEx for the hyperspace DLL entry point execution.
-- In my opinion, this method is more ideal for an external window with internal memory access. At this moment there's quite a lot of detection vectors, but with some modifications (such as hiding threads, not triggering thread notify routines on thread creation/deletion and ideally not using process notify routines for cleanup) it can be extremely good.
-- I've only tested this on Notepad and not anything else, if you run into bugs or issues please submit a Pull request.
+- In my opinion, this method is more ideal for an external window with internal memory access. At this moment there's quite a lot of detection vectors, but with some modifications (such as hiding threads, spoofing return addresses, not triggering thread notify routines on thread creation/deletion and ideally not using traditional process notify routines for cleanup) it can be extremely good.
+- I've only tested this on Notepad and not anything else, if you run into bugs or issues please submit a pull request.
 - **Hyperspace allocation was designed with thread execution in mind** - while IAT hooking is supported, thread execution is recommended for optimal compatibility.
 
 ### Signature Scan Protection Mechanism
@@ -303,7 +305,7 @@ The tool uses three main techniques for the DLL memory allocation:
 
 ## Security Notes
 
-This tool is designed for educational and research purposes only. It demonstrates advanced memory manipulation techniques that operate at the kernel level. Use responsibly and only on systems you own or have explicit permission to test. This is an older project of mine which I've decided to release, it is likely detected on most anti-cheat solutions by now. This project has not been tested on my bare metal system, please run it on a virtual machine.
+This tool is designed for educational and research purposes only. It demonstrates advanced memory manipulation techniques that operate at the kernel level. Use responsibly and only on systems you own or have explicit permission to test. This is an older project of mine which I've decided to release, it is likely detected on most anti-cheat solutions by now. This project has not been tested on my bare metal system, please run it on a virtual machine. This project is also **NOT** Control Flow Guard (CFG) compliant. Please disable CFG under Exploit Protection settings if your target application is compiled with CFG, else the target application will crash on injection.
 
 ## Detection Test Cases
 
@@ -319,13 +321,39 @@ The project requires:
 - Windows SDK 10
 - Windows Driver Kit (WDK), matching version with Windows SDK
 - C++20 or later
+- **Optional**: LLVM/Clang for alternative compilation
 
-To build:
+### Compiler Support
+
+The project supports both MSVC and Clang compilation:
+
+- **MSVC**: Default compiler, fully tested and supported
+- **Clang**: Alternative compiler option
+
+### Build Instructions
 
 1. Clone the repository
 2. Open the solution in Visual Studio
 3. Ensure the SDK and WDK are properly installed and configured within the project settings
-4. Build in Release mode for x64 architecture
+4. **Choose your compiler**:
+    - **For MSVC**: Use default Visual Studio toolchain
+    - **For Clang**:
+        - Install LLVM/Clang
+        - Set Platform Toolset to "LLVM (clang-cl)" in project properties
+        - Or configure custom build with Clang directly
+5. Build in Release mode for x64 architecture
+
+### Clang-Specific Notes
+
+- The project automatically detects the compiler and uses appropriate intrinsics/inline assembly
+- WDK paths are dynamically resolved to support different installation versions
+- Both kernel driver and user mode components support Clang compilation
+
+### Build Configurations
+
+- **Release x64** (Recommended for production)
+- **Debug x64** (For development and debugging)
+- Compatible with both MSVC and Clang toolchains
 
 ## Credits
 
@@ -335,7 +363,6 @@ To build:
  - Process-context specific kernel driver mapper idea taken from: https://git.back.engineering/IDontCode/PSKDM
  - Hyperspace idea taken from: https://git.back.engineering/IDontCode/hyperspace
  - Kernel driver manual mapper: https://github.com/TheCruZ/kdmapper
- - Import hash/direct syscall library: https://github.com/annihilatorq/shadow_syscall
  - PDB symbol parsing: https://github.com/i1tao/EzPDB
  - Windows kernel structures: https://www.vergiliusproject.com/kernels/x64
 

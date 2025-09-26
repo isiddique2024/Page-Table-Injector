@@ -1,0 +1,38 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="entry.cpp" />
+    <ClCompile Include="pdb\pdb.hpp" />
+    <ClCompile Include="pdb\md5.cpp" />
+    <ClCompile Include="pdb\pdb.cpp" />
+    <ClCompile Include="driver_mapper\memory_manager.cpp" />
+    <ClCompile Include="driver_mapper\service_manager.cpp" />
+    <ClCompile Include="driver_mapper\page_table_manager.cpp" />
+    <ClCompile Include="driver_mapper\pe_parser.cpp" />
+    <ClCompile Include="driver_mapper\trace_cleaner.cpp" />
+    <ClCompile Include="driver_mapper\utils.cpp" />
+    <ClCompile Include="driver_mapper\driver_mapper.cpp" />
+    <ClCompile Include="inject\dll_mapper.cpp" />
+    <ClCompile Include="driver\driver_manager.cpp" />
+    <ClCompile Include="utils\window_manager.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="inject\dll_mapper.hpp" />
+    <ClInclude Include="driver\driver_manager.hpp" />
+    <ClInclude Include="lib\ia_32.h" />
+    <ClInclude Include="utils\window_manager.hpp" />
+    <ClInclude Include="driver\driver_shell.h" />
+    <ClInclude Include="inject\dll_shell.h" />
+    <ClInclude Include="pdb\md5.hpp" />
+    <ClInclude Include="lib\cli.h" />
+    <ClInclude Include="driver_mapper\memory_manager.hpp" />
+    <ClInclude Include="driver_mapper\service_manager.hpp" />
+    <ClInclude Include="driver_mapper\trace_cleaner.hpp" />
+    <ClInclude Include="driver_mapper\page_table_manager.hpp" />
+    <ClInclude Include="driver_mapper\pe_parser.hpp" />
+    <ClInclude Include="driver_mapper\utils.hpp" />
+    <ClInclude Include="driver_mapper\driver_mapper.hpp" />
+    <ClInclude Include="utils\logging.h" />
+    <ClInclude Include="driver_mapper\def.h" />
+  </ItemGroup>
+</Project>

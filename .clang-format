@@ -1,5 +1,4 @@
 ---
-# .clang-format configuration for Crypto Surveillance System
 # Based on professional C++20 standards and best practices
 
 BasedOnStyle: Google
