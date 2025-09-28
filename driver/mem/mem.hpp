@@ -90,7 +90,7 @@ namespace mem {
    * to disk.
    */
   auto write_page_tables(uintptr_t target_dir_base, uintptr_t base_va, size_t page_count,
-                         bool use_large_page) -> NTSTATUS;
+                         memory_type mem_type) -> NTSTATUS;
   /**
    * @brief Hijack null/empty PTEs within a process's .text section
    * @param local_pid Current process ID (unused)
@@ -103,8 +103,8 @@ namespace mem {
    * frame numbers and replaces them with hidden physical pages. Dangerous
    * technique that may cause instability.
    */
-  auto hijack_null_pfn(const uint32_t local_pid, const uint32_t target_pid, const size_t size,
-                       const bool use_large_page) -> void*;
+  auto hijack_null_pfn(const uint32_t local_pid, const uint32_t target_pid, const size_t size)
+      -> void*;
 
   /**
    * @brief Find unused virtual address space between loaded modules
@@ -118,7 +118,7 @@ namespace mem {
    * enough for the requested allocation, then maps hidden pages at that location.
    */
   auto allocate_between_modules(const uint32_t local_pid, const uint32_t target_pid,
-                                const size_t size, const bool use_large_page) -> void*;
+                                const size_t size) -> void*;
 
   /**
    * @brief Allocate memory using unused PML4 entries for maximum stealth
@@ -134,7 +134,7 @@ namespace mem {
    * spaces with base address entropy for maximum stealth.
    */
   auto allocate_at_non_present_pml4e(const uint32_t local_pid, const uint32_t target_pid,
-                                     const size_t size, const bool use_large_page,
+                                     const size_t size, const memory_type mem_type,
                                      const bool use_high_address) -> void*;
 
 }  // namespace mem

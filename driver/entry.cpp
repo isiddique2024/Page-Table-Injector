@@ -273,7 +273,7 @@ namespace {
           (std::uintptr_t)data.alloc_base + data.entry_point;
 
       void* remote_shellcode = allocate_memory_by_mode(data.local_pid, data.target_pid, PAGE_SIZE,
-                                                       false, data.alloc_mode);
+                                                       memory_type::NORMAL_PAGE, data.alloc_mode);
       if (!remote_shellcode) {
         log("ERROR", "failed to allocate remote shellcode");
         return 0;
@@ -443,7 +443,7 @@ namespace {
      * @param local_pid Current process ID
      * @param target_pid Target process ID for allocation
      * @param size Size of memory to allocate
-     * @param use_large_page Whether to use 2MB large pages
+     * @param mem_type Whether to use 4KB, 2MB, or 1GB pages
      * @param alloc_mode Allocation strategy mode
      * @return Pointer to allocated memory, or nullptr on failure
      *
@@ -451,22 +451,22 @@ namespace {
      * the specified mode (hyperspace, between modules, high/low address, etc.).
      */
     static auto allocate_memory_by_mode(uint32_t local_pid, uint32_t target_pid, size_t size,
-                                        bool use_large_page, uint32_t alloc_mode) -> void* {
+                                        memory_type mem_type, uint32_t alloc_mode) -> void* {
       switch (alloc_mode) {
         case ALLOC_INSIDE_MAIN_MODULE:
-          return mem::hijack_null_pfn(local_pid, target_pid, size, use_large_page);
+          return mem::hijack_null_pfn(local_pid, target_pid, size);
         case ALLOC_BETWEEN_LEGIT_MODULES:
-          return mem::allocate_between_modules(local_pid, target_pid, size, use_large_page);
+          return mem::allocate_between_modules(local_pid, target_pid, size);
         case ALLOC_AT_LOW_ADDRESS:
-          return mem::allocate_at_non_present_pml4e(local_pid, target_pid, size, use_large_page,
-                                                    false);
+          return mem::allocate_at_non_present_pml4e(local_pid, target_pid, size, mem_type,
+                                                    memory_space::USER_MODE);
         case ALLOC_AT_HIGH_ADDRESS:
-          return mem::allocate_at_non_present_pml4e(local_pid, target_pid, size, use_large_page,
-                                                    true);
+          return mem::allocate_at_non_present_pml4e(local_pid, target_pid, size, mem_type,
+                                                    memory_space::KERNEL_MODE);
         case ALLOC_AT_HYPERSPACE:
-          return hyperspace::allocate_in_hyperspace(target_pid, size, use_large_page);
+          return hyperspace::allocate_in_hyperspace(target_pid, size, mem_type);
         default:
-          return mem::allocate_between_modules(local_pid, target_pid, size, use_large_page);
+          return mem::allocate_between_modules(local_pid, target_pid, size);
       }
     }
 
@@ -487,6 +487,19 @@ namespace {
         return 0;
       }
 
+      auto hyperspace_cleanup = [&]() {
+        hyperspace::cleanup_hyperspace_context(&globals::ctx);
+
+        if (hyperspace::callbacks::g_process_callback_handle) {
+          globals::ps_set_create_process_notify_routine_ex(
+              reinterpret_cast<PCREATE_PROCESS_NOTIFY_ROUTINE_EX>(
+                  hyperspace::callbacks::g_callback_shellcode_address),
+              TRUE);
+          hyperspace::callbacks::g_process_callback_handle = nullptr;
+          hyperspace::callbacks::g_callback_shellcode_address = nullptr;
+        }
+      };
+
       void* address = nullptr;
 
       // handle hyperspace initialization if needed
@@ -501,7 +514,7 @@ namespace {
         NTSTATUS install_status = hyperspace::callbacks::install_process_callback();
         if (!NT_SUCCESS(install_status)) {
           log("ERROR", "failed to install process callback in ntoskrnl");
-          hyperspace::cleanup_hyperspace_context(&globals::ctx);
+          hyperspace_cleanup();
           return 0;
         }
 
@@ -509,26 +522,19 @@ namespace {
             hyperspace::create_contextualized_ntoskrnl();
         if (!NT_SUCCESS(create_contextualized_ntoskrnl_status)) {
           log("INFO", "create contextualized ntoskrnl failed");
-
-          hyperspace::cleanup_hyperspace_context(&globals::ctx);
-
-          if (hyperspace::callbacks::g_process_callback_handle) {
-            globals::ps_set_create_process_notify_routine_ex(
-                reinterpret_cast<PCREATE_PROCESS_NOTIFY_ROUTINE_EX>(
-                    hyperspace::callbacks::g_callback_shellcode_address),
-                TRUE);
-            hyperspace::callbacks::g_process_callback_handle = nullptr;
-            hyperspace::callbacks::g_callback_shellcode_address = nullptr;
-          }
-
+          hyperspace_cleanup();
           return 0;
         }
       }
 
-      address = allocate_memory_by_mode(data.local_pid, data.target_pid, data.size,
-                                        data.use_large_page, data.mode);
+      address = allocate_memory_by_mode(data.local_pid, data.target_pid, data.size, data.mem_type,
+                                        data.mode);
 
       if (!address) {
+        if (data.mode == ALLOC_AT_HYPERSPACE) {
+          log("INFO", "hyperspace allocation failed, cleaning up");
+          hyperspace_cleanup();
+        }
         return 0;
       }
 
@@ -655,7 +661,7 @@ namespace {
 auto entry(uintptr_t io_get_current_process_addr, uintptr_t mm_copy_virtual_memory_addr,
            pdb_offsets* offsets) -> NTSTATUS {
   if (!io_get_current_process_addr || !mm_copy_virtual_memory_addr || !offsets) {
-    return STATUS_INVALID_PARAMETER;
+    return STATUS_INVALID_PARAMETER_1;
   }
 
   auto io_get_current_process =
@@ -664,7 +670,7 @@ auto entry(uintptr_t io_get_current_process_addr, uintptr_t mm_copy_virtual_memo
       reinterpret_cast<function_types::mm_copy_virtual_memory_t>(mm_copy_virtual_memory_addr);
 
   if (!io_get_current_process || !mm_copy_virtual_memory) {
-    return STATUS_INVALID_PARAMETER;
+    return STATUS_INVALID_PARAMETER_2;
   }
 
   pdb_offsets local_offsets = {0};
@@ -672,7 +678,7 @@ auto entry(uintptr_t io_get_current_process_addr, uintptr_t mm_copy_virtual_memo
   const auto current_process = io_get_current_process();
 
   if (!current_process) {
-    return STATUS_UNSUCCESSFUL;
+    return STATUS_INVALID_PARAMETER_3;
   }
 
   NTSTATUS copy_status =
@@ -680,8 +686,7 @@ auto entry(uintptr_t io_get_current_process_addr, uintptr_t mm_copy_virtual_memo
                              sizeof(pdb_offsets), KernelMode, &bytes);
 
   if (!NT_SUCCESS(copy_status) || bytes != sizeof(pdb_offsets)) {
-    log("ERROR", "failed to copy PDB offsets: 0x%X", copy_status);
-    return STATUS_UNSUCCESSFUL;
+    return STATUS_INVALID_PARAMETER_4;
   }
 
   auto status_offsets = init::scan_offsets(local_offsets);

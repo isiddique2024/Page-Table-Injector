@@ -41,6 +41,12 @@ namespace settings {
     SET_LOCK_BIT,
     HIDE_TRANSLATION
   };
+
+  // additional options
+  enum class experimental_options {
+    NONE,
+    MANIPULATE_SYSTEM_PARTITION
+  };
 }  // namespace settings
 
 class driver_mapper_t {
@@ -56,7 +62,9 @@ public:
       settings::driver_alloc_mode alloc_mode = settings::driver_alloc_mode::ALLOC_IN_SYSTEM_CONTEXT,
       settings::memory_type mem_type = settings::memory_type::NORMAL_PAGE,
       settings::hide_type driver_hide = settings::hide_type::NONE,
-      settings::hide_type dll_hide = settings::hide_type::NONE) -> std::uint64_t;
+      settings::hide_type dll_hide = settings::hide_type::NONE,
+      settings::experimental_options experimental_options = settings::experimental_options::NONE)
+      -> std::uint64_t;
 
   auto prepare_local_image(void* local_image, const std::vector<std::uint8_t>& driver_data,
                            PIMAGE_NT_HEADERS64 nt_headers) -> bool;
@@ -66,7 +74,6 @@ public:
       -> std::uint64_t;
   auto get_ntoskrnl_base() -> std::uint64_t;
 
-  // pdb
   // PDB and symbol resolution
   struct pdb_offsets {
     // driver vars
@@ -75,6 +82,7 @@ public:
     uintptr_t DriverSize;
     uint32_t DriverHideType;
     uint32_t DllHideType;
+    uint32_t ExperimentalOptions;
 
     // memory management (Mm)
     uintptr_t MmGetPhysicalAddress;
@@ -93,6 +101,7 @@ public:
     uintptr_t MmGetPhysicalMemoryRanges;
     uintptr_t MmIsAddressValid;
     uintptr_t MmAllocateSecureKernelPages;
+    uintptr_t MmPhysicalMemoryBlock;
 
     // memory info (Mi) functions
     uintptr_t MiGetVmAccessLoggingPartition;

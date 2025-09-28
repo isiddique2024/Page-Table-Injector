@@ -21,7 +21,7 @@ namespace physical {
     if (!main_virtual_address)
       return STATUS_INSUFFICIENT_RESOURCES;
 
-    // globals::memset(main_virtual_address, 0, PAGE_SIZE);
+    globals::memset(main_virtual_address, 0, PAGE_SIZE);
 
     VIRTUAL_ADDRESS virtual_address{};
     virtual_address.Pointer = main_virtual_address;
@@ -67,7 +67,6 @@ namespace physical {
     const unsigned long page_offset = physical_address % PAGE_SIZE;
     const uintptr_t page_start_physical = physical_address - page_offset;
     main_page_entry->PageFrame = PAGE_TO_PFN(page_start_physical);
-    // page_table::flush_caches(main_virtual_address);
 
     globals::ke_flush_entire_tb(TRUE, TRUE);  //  ( cr3/cr4 rewrite on all cores )
     globals::ke_invalidate_all_caches();      // ( __wbinvd on all cores )
@@ -84,6 +83,7 @@ namespace physical {
           target_address, buffer, size);
       return STATUS_UNSUCCESSFUL;
     }
+
     if (!validation::is_physical_address_valid(target_address) && !bypass_validation) {
       log("ERROR", "invalid physical address: 0x%llx", target_address);
       return STATUS_UNSUCCESSFUL;
@@ -108,6 +108,7 @@ namespace physical {
           target_address, buffer, size);
       return STATUS_UNSUCCESSFUL;
     }
+
     if (!validation::is_physical_address_valid(target_address) && !bypass_validation) {
       log("ERROR", "invalid physical address: 0x%llx", target_address);
       return STATUS_UNSUCCESSFUL;
@@ -419,13 +420,19 @@ namespace physical {
     return status;
   }
 
-  auto get_page_frame_number(uintptr_t virtual_address, bool use_large_page) -> uintptr_t {
+  auto get_page_frame_number(uintptr_t virtual_address, memory_type mem_type) -> uintptr_t {
     PHYSICAL_ADDRESS physical_address =
         globals::mm_get_physical_address(reinterpret_cast<void*>(virtual_address));
     if (!physical_address.QuadPart) {
       return 0;
     }
-    return physical_address.QuadPart >> (use_large_page ? 21 : 12);
-  };
+
+    // Shift based on page size
+    uint32_t shift = (mem_type == memory_type::HUGE_PAGE) ? 30 :  // 1GB = 2^30
+                         (mem_type == memory_type::LARGE_PAGE) ? 21
+                                                               :  // 2MB = 2^21
+                         12;                                      // 4KB = 2^12
+    return physical_address.QuadPart >> shift;
+  }
 
 }  // namespace physical

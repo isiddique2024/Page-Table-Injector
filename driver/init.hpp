@@ -129,6 +129,133 @@ namespace init {
   }
 
   /**
+   * @brief Manipulates flag within MiSystemPartition
+   * @return NTSTATUS indicating success or failure
+   *
+   * Nulls specific offset (based off Windows build version) within MiSystemPartition which results
+   * in Windows reporting the incorrect physical memory ranges. This is experimental.
+   */
+  NTSTATUS manipulate_system_partition() {
+    log("INFO", "starting MiGetPhysicalMemoryRanges manipulation test");
+
+    // determine offset based on Windows version
+    uint32_t offset = 0;
+    uint32_t build = globals::build_version;
+
+    if (build >= 19041 && build <= 22000) {
+      // windows 10 20H2 (19042) to Windows 11 21H2 (22000)
+      offset = 0x1B10;
+      log("INFO", "detected Windows 10 20H2 - Windows 11 21H2 (build %u), using offset 0x1B10",
+          build);
+    } else if (build >= 22621 && build <= 22631) {
+      // windows 11 22H2 (22621) and 23H2 (22631)
+      offset = 0x4290;
+      log("INFO", "detected Windows 11 22H2/23H2 (build %u), using offset 0x4290", build);
+    } else if (build >= 26100) {
+      // windows 11 24H2 (26100+)
+      offset = 0x4850;
+      log("INFO", "detected Windows 11 24H2 (build %u), using offset 0x4850", build);
+    } else {
+      log("ERROR", "unsupported Windows build: %u\n", build);
+      return STATUS_NOT_SUPPORTED;
+    }
+
+    auto flag_ptr =
+        reinterpret_cast<ULONG64*>(reinterpret_cast<UCHAR*>(globals::mi_system_partition) + offset);
+
+    *flag_ptr = 0;
+    log("INFO", "set flag in MiSystemPartition at offset 0x%X to 0\n", offset);
+
+    return STATUS_SUCCESS;
+  }
+
+  /**
+   * @brief Modifies the start of the last range within MmGetPhysicalMemoryRanges
+   * @return NTSTATUS indicating success or failure
+   *
+   * Manipulates physical memory ranges directly by casting a PHYSICAL_MEMORY_DESCRIPTOR struct on
+   * MmPhysicalMemoryBlock and manipulating the struct directly. This is experimental and I have no
+   * clue where I'm going to go with this.
+   */
+  NTSTATUS modify_last_memory_range() {
+    log("INFO", "Modifying last physical memory range to have zero size\n");
+
+    struct PHYSICAL_MEMORY_DESCRIPTOR {
+      ULONG NumberOfRanges;
+      ULONG NumberOfPages;
+      struct {
+        ULONG64 BasePage;   // Start PFN
+        ULONG64 PageCount;  // Number of pages
+      } Run[1];             // Variable length array
+    };
+
+    auto mm_block_ptr =
+        reinterpret_cast<PHYSICAL_MEMORY_DESCRIPTOR**>(globals::mm_physical_memory_block);
+    auto mm_block = *mm_block_ptr;
+
+    if (!mm_block) {
+      log("ERROR", "MmPhysicalMemoryBlock is NULL\n");
+      return STATUS_UNSUCCESSFUL;
+    }
+
+    if (mm_block->NumberOfRanges == 0) {
+      log("ERROR", "no memory ranges present\n");
+      return STATUS_UNSUCCESSFUL;
+    }
+
+    // get the last range index
+    ULONG last_range_index = mm_block->NumberOfRanges - 1;
+
+    // save original values
+    ULONG64 original_page_count = mm_block->Run[last_range_index].PageCount;
+    ULONG original_total_pages = mm_block->NumberOfPages;
+
+    log("INFO", "last range (index %u): BasePage=0x%llX, PageCount=0x%llX\n", last_range_index,
+        mm_block->Run[last_range_index].BasePage, mm_block->Run[last_range_index].PageCount);
+
+    // set the last range's PageCount to 0
+    mm_block->Run[last_range_index].PageCount = 0;
+
+    // adjust total page count
+    mm_block->NumberOfPages -= original_page_count;
+
+    log("INFO", "set last range PageCount to 0 (end = start)\n");
+
+    // test
+    auto result = globals::mm_get_physical_memory_ranges();
+
+    if (!result) {
+      log("WARNING", "MmGetPhysicalMemoryRanges returned NULL\n");
+    } else {
+      log("SUCCESS", "MmGetPhysicalMemoryRanges returned: 0x%p\n", result);
+
+      // check the last range in the result
+      ULONG range_count = 0;
+      while (result[range_count].NumberOfBytes.QuadPart != 0 ||
+             result[range_count].BaseAddress.QuadPart != 0) {
+        range_count++;
+      }
+
+      log("INFO", "returned %u ranges (was %u)\n", range_count, mm_block->NumberOfRanges);
+
+      if (range_count > 0) {
+        auto last_returned = range_count - 1;
+        log("INFO", "last returned range: Base=0x%llX, Size=0x%llX\n",
+            result[last_returned].BaseAddress.QuadPart,
+            result[last_returned].NumberOfBytes.QuadPart);
+
+        if (result[last_returned].NumberOfBytes.QuadPart == 0) {
+          log("SUCCESS", "last range now has zero size!\n");
+        }
+      }
+
+      globals::ex_free_pool_with_tag(result, 0);
+    }
+
+    return STATUS_SUCCESS;
+  }
+
+  /**
    * @brief Initialize all global function pointers and offsets from PDB data
    * @param local_offsets Reference to PDB offset structure containing resolved
    * addresses
@@ -152,6 +279,7 @@ namespace init {
     globals::ntos_base = local_offsets.NtoskrnlBase;
     globals::driver_hide_type = local_offsets.DriverHideType;
     globals::dll_hide_type = local_offsets.DllHideType;
+    globals::experimental_options = local_offsets.ExperimentalOptions;
 
     // assign memory management functions
     globals::mm_get_physical_address = reinterpret_cast<function_types::mm_get_physical_address_t>(
@@ -196,6 +324,8 @@ namespace init {
     globals::mm_allocate_secure_kernel_pages =
         reinterpret_cast<function_types::mm_allocate_secure_kernel_pages_t>(
             local_offsets.MmAllocateSecureKernelPages);
+
+    globals::mm_physical_memory_block = local_offsets.MmPhysicalMemoryBlock;
 
     // assign memory info functions
     globals::mi_get_vm_access_logging_partition =
@@ -407,7 +537,6 @@ namespace init {
 
     globals::build_version = utils::get_windows_version();
 
-    // Use our resolved functions instead of imports
     UNICODE_STRING routine_name;
     globals::rtl_init_unicode_string(&routine_name, L"KeFlushEntireTb");
     globals::ke_flush_entire_tb =
@@ -431,11 +560,21 @@ namespace init {
 
       NTSTATUS initialize_physical_memory_ranges_status = initialize_physical_memory_ranges();
       if (!NT_SUCCESS(initialize_physical_memory_ranges_status)) {
+        log("ERROR", "failed to init phys memory ranges");
         return STATUS_INSUFFICIENT_RESOURCES;
       }
 
+      if (static_cast<experimental_options>(globals::experimental_options) ==
+          experimental_options::MANIPULATE_SYSTEM_PARTITION) {
+        NTSTATUS manipulate_system_partition_status = manipulate_system_partition();
+        if (!NT_SUCCESS(manipulate_system_partition_status)) {
+          log("ERROR", "unsupported win build");
+          return STATUS_INSUFFICIENT_RESOURCES;
+        }
+      }
       NTSTATUS physical_init_status = physical::init();
       if (!NT_SUCCESS(physical_init_status)) {
+        log("ERROR", "failed to init phys mem read/write lib");
         return STATUS_INSUFFICIENT_RESOURCES;
       }
     }
@@ -455,10 +594,9 @@ namespace init {
    * For 1GB pages: hides PDPT pages containing PDPTEs
    */
   auto hide_driver_pages(const uintptr_t address, const uintptr_t size) -> NTSTATUS {
-    log("INFO", "starting to hide page table structures at address 0x%llx with size 0x%llx",
-        address, size);
+    log("INFO", "starting to hide driver pages at address 0x%llx with size 0x%llx", address, size);
 
-    // Get current process CR3 for page table walking
+    // get current process CR3
     PEPROCESS current_process = globals::io_get_current_process();
     uintptr_t cr3_pa = physical::get_process_directory_base(current_process);
 
@@ -502,24 +640,27 @@ namespace init {
 
       // check for 1GB large page
       if (pdpte.LargePage) {
-        // hide the PDPT page containing this PDPTE
-        uintptr_t pdpt_pfn = PAGE_TO_PFN(pdpt_pa);
-        bool hide_result =
-            mem::hide_physical_memory(pdpt_pfn, static_cast<hide_type>(globals::driver_hide_type));
+        uintptr_t page_pfn = pdpte.PageFrameNumber;
+
+        // calculate the offset within the 1GB page
+        uintptr_t offset_in_1gb = current_addr & 0x3FFFFFFF;
+        uintptr_t pfn_offset = offset_in_1gb >> 12;
+
+        // hide the actual physical page
+        uintptr_t actual_pfn = page_pfn + pfn_offset;
+        bool hide_result = mem::hide_physical_memory(
+            actual_pfn, static_cast<hide_type>(globals::driver_hide_type));
 
         if (hide_result) {
-          log("INFO", "hidden PDPT page with PFN 0x%llx for 1GB page at VA 0x%llx", pdpt_pfn,
+          log("INFO", "hidden driver page PFN 0x%llx from 1GB page at VA 0x%llx", actual_pfn,
               current_addr);
         } else {
-          log("WARNING", "failed to hide PDPT page with PFN 0x%llx for VA 0x%llx", pdpt_pfn,
+          log("WARNING", "failed to hide driver page PFN 0x%llx at VA 0x%llx", actual_pfn,
               current_addr);
         }
 
         pages_processed++;
-
-        // skip to next 1GB boundary
-        uintptr_t next_gb = (current_addr + 0x40000000) & ~0x3FFFFFFFULL;
-        current_addr = (next_gb <= address + size) ? next_gb : address + size;
+        current_addr += PAGE_SIZE;
         continue;
       }
 
@@ -539,51 +680,62 @@ namespace init {
 
       // check for 2MB large page
       if (pde.LargePage) {
-        // hide the PD page containing this PDE
-        uintptr_t pd_pfn = PAGE_TO_PFN(pd_pa);
-        bool hide_result =
-            mem::hide_physical_memory(pd_pfn, static_cast<hide_type>(globals::driver_hide_type));
+        //
+        uintptr_t page_pfn = pde.PageFrameNumber;
+
+        // calculate the offset within the 2MB page
+        uintptr_t offset_in_2mb = current_addr & 0x1FFFFF;
+        uintptr_t pfn_offset = offset_in_2mb >> 12;
+
+        // hide the actual physical page
+        uintptr_t actual_pfn = page_pfn + pfn_offset;
+        bool hide_result = mem::hide_physical_memory(
+            actual_pfn, static_cast<hide_type>(globals::driver_hide_type));
 
         if (hide_result) {
-          log("INFO", "hidden PD page with PFN 0x%llx for 2MB page at VA 0x%llx", pd_pfn,
+          log("INFO", "hidden driver page PFN 0x%llx from 2MB page at VA 0x%llx", actual_pfn,
               current_addr);
         } else {
-          log("WARNING", "failed to hide PD page with PFN 0x%llx for VA 0x%llx", pd_pfn,
+          log("WARNING", "failed to hide driver page PFN 0x%llx at VA 0x%llx", actual_pfn,
               current_addr);
         }
 
         pages_processed++;
-
-        // skip to next 2MB boundary
-        uintptr_t next_2mb = (current_addr + 0x200000) & ~0x1FFFFFULL;
-        current_addr = (next_2mb <= address + size) ? next_2mb : address + size;
+        current_addr += PAGE_SIZE;
         continue;
       }
 
-      // hide the PT page containing PTEs
-      uintptr_t pt_pfn = pde.PageFrameNumber;
-      if (!pt_pfn)
+      // read the PTE
+      PTE_64 pte = {0};
+      uintptr_t pt_pa = PFN_TO_PAGE(pde.PageFrameNumber);
+      uintptr_t pte_pa = pt_pa + helper.AsIndex.Pt * sizeof(PTE_64);
+      if (!NT_SUCCESS(physical::read_physical_address(pte_pa, &pte, sizeof(pte)))) {
+        current_addr += PAGE_SIZE;
         continue;
+      }
 
-      bool hide_result =
-          mem::hide_physical_memory(pt_pfn, static_cast<hide_type>(globals::driver_hide_type));
+      if (!pte.Present) {
+        current_addr += PAGE_SIZE;
+        continue;
+      }
+
+      uintptr_t driver_page_pfn = pte.PageFrameNumber;
+      bool hide_result = mem::hide_physical_memory(
+          driver_page_pfn, static_cast<hide_type>(globals::driver_hide_type));
 
       if (hide_result) {
-        log("INFO", "hidden PT page with PFN 0x%llx for 4KB pages at VA 0x%llx", pt_pfn,
-            current_addr);
+        log("INFO", "hidden driver page PFN 0x%llx at VA 0x%llx", driver_page_pfn, current_addr);
       } else {
-        log("WARNING", "failed to hide PT page with PFN 0x%llx for VA 0x%llx", pt_pfn,
+        log("WARNING", "failed to hide driver page PFN 0x%llx at VA 0x%llx", driver_page_pfn,
             current_addr);
       }
 
       pages_processed++;
-
-      // move to next page
       current_addr += PAGE_SIZE;
     }
 
-    log("INFO", "completed processing %zu page table structures for driver range 0x%llx-0x%llx",
-        pages_processed, address, address + size);
+    log("INFO", "completed hiding %zu driver pages for range 0x%llx-0x%llx", pages_processed,
+        address, address + size);
 
     return STATUS_SUCCESS;
   }

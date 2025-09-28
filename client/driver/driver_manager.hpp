@@ -55,7 +55,7 @@ public:
 
   [[nodiscard]] auto allocate_independent_pages(std::uint32_t local_pid, std::uint32_t target_pid,
                                                 std::uint32_t target_tid, std::size_t size,
-                                                bool use_large_pages, std::uint32_t alloc_mode)
+                                                memory_type mem_type, std::uint32_t alloc_mode)
       -> void*;
 
   [[nodiscard]] auto execute_dll_via_thread(std::uint32_t local_pid, std::uint32_t target_pid,
@@ -124,7 +124,7 @@ private:
     std::uint32_t target_tid;
     void* address;
     std::size_t size;
-    bool use_large_page;
+    memory_type use_large_page;
     std::uint32_t alloc_mode;
   };
 

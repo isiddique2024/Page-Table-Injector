@@ -130,6 +130,6 @@ namespace physical {
                        const PEPROCESS target_process, const void* target_address,
                        const size_t buffer_size);
 
-  auto get_page_frame_number(uintptr_t virtual_address, bool use_large_page) -> uintptr_t;
+  auto get_page_frame_number(uintptr_t virtual_address, memory_type mem_type) -> uintptr_t;
 
 }  // namespace physical

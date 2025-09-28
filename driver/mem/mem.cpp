@@ -106,8 +106,7 @@ namespace mem {
    * Implements various memory hiding techniques via MmPfnDatabase manipulation
    */
   auto hide_physical_memory(uintptr_t page_frame_number, hide_type type, bool lock_page) -> bool {
-    if (page_frame_number < globals::mm_lowest_physical_page ||
-        page_frame_number > globals::mm_highest_physical_page) {
+    if (!validation::is_pfn_valid(page_frame_number)) {
       log("ERROR", "invalid PFN range: 0x%llx", page_frame_number);
       return false;
     }
@@ -319,8 +318,9 @@ namespace mem {
    * @return Virtual address of allocated memory, or nullptr on failure
    *
    * Allocates physically contiguous memory block and applies hiding techniques.
-   * Handles both regular and large page allocations.
+   * Handles both regular, large page and huge page allocations.
    */
+
   auto allocate_contiguous_memory(size_t size) -> void* {
     PHYSICAL_ADDRESS max_address{};
     max_address.QuadPart = ((ULONG64) ~((ULONG64)0));
@@ -330,15 +330,19 @@ namespace mem {
       return 0;
     }
     globals::memset(base_address, 0, size);
-    uintptr_t pfn = 0;
 
-    // check if size is 2MB
-    if (size == 0x200000) {
-      pfn = physical::get_page_frame_number(reinterpret_cast<uintptr_t>(base_address), true);
+    // determine memory type based on size
+    memory_type mem_type;
+    if (size == 0x40000000) {  // 1GB
+      mem_type = memory_type::HUGE_PAGE;
+    } else if (size == 0x200000) {  // 2MB
+      mem_type = memory_type::LARGE_PAGE;
     } else {
-      pfn = physical::get_page_frame_number(reinterpret_cast<uintptr_t>(base_address), false);
+      mem_type = memory_type::NORMAL_PAGE;
     }
 
+    uintptr_t pfn =
+        physical::get_page_frame_number(reinterpret_cast<uintptr_t>(base_address), mem_type);
     if (!pfn) {
       globals::mm_free_contiguous_memory(base_address);
       log("ERROR", "failed to get pfn for page");
@@ -353,6 +357,15 @@ namespace mem {
       return 0;
     }
 
+    const auto pfn_entry_addr = *reinterpret_cast<uintptr_t*>(globals::mm_pfn_db) + 0x30 * (pfn);
+
+    // lock in physical memory
+    auto lock_result = globals::mi_lock_page_table_page(pfn_entry_addr, 3);
+    if (!lock_result) {
+      log("ERROR", "failed to lock page table page for PFN: 0x%llx", pfn);
+      return 0;
+    }
+
     return base_address;
   }
 
@@ -361,33 +374,43 @@ namespace mem {
    * @param target_dir_base Physical address of target process PML4
    * @param base_va Base virtual address to map
    * @param page_count Number of pages to map
-   * @param use_large_page Whether to use 2MB large pages instead of 4KB pages
+   * @param mem_type Whether to use 4KB, 2MB or 1GB pages
    * @return NTSTATUS indicating success or failure
    *
    * Creates complete page table hierarchy (PML4E->PDPTE->PDE->PTE) for manual
-   * memory mapping. Supports both 4KB and 2MB page sizes with proper cache
+   * memory mapping. Supports both 4KB,2MB and 1GB page sizes with proper cache
    * flushing after each page table modification to ensure coherency and locking to prevent paging
    * to disk.
    */
   auto write_page_tables(uintptr_t target_dir_base, uintptr_t base_va, size_t page_count,
-                         bool use_large_page) -> NTSTATUS {
+                         memory_type mem_type) -> NTSTATUS {
     if (!target_dir_base || !page_count)
       return STATUS_INVALID_PARAMETER;
 
-    const size_t PAGE_STEP = use_large_page ? 0x200000 : PAGE_SIZE;
+    // determine page size based on memory type
+    const size_t PAGE_STEP = (mem_type == memory_type::HUGE_PAGE) ? 0x40000000 :  // 1GB
+                                 (mem_type == memory_type::LARGE_PAGE) ? 0x200000
+                                                                       :  // 2MB
+                                 PAGE_SIZE;                               // 4KB
 
     for (size_t i = 0; i < page_count; ++i) {
       const auto va = base_va + i * PAGE_STEP;
       ADDRESS_TRANSLATION_HELPER h = {.AsUInt64 = va};
 
-      // allocate actual page
-      auto page = use_large_page ? mem::allocate_contiguous_memory(0x200000)
-                                 : mem::allocate_independent_pages(PAGE_SIZE);
+      // alloc actual page based on size
+      void* page = nullptr;
+      if (mem_type == memory_type::HUGE_PAGE) {
+        page = mem::allocate_contiguous_memory(0x40000000);  // 1GB
+      } else if (mem_type == memory_type::LARGE_PAGE) {
+        page = mem::allocate_contiguous_memory(0x200000);  // 2MB
+      } else {
+        page = mem::allocate_independent_pages(PAGE_SIZE);  // 4KB
+      }
+
       if (!page)
         return STATUS_INVALID_ADDRESS;
 
-      auto pfn = physical::get_page_frame_number(reinterpret_cast<uintptr_t>(page), use_large_page);
-
+      auto pfn = physical::get_page_frame_number(reinterpret_cast<uintptr_t>(page), mem_type);
       if (!pfn)
         return STATUS_INVALID_ADDRESS;
 
@@ -434,8 +457,10 @@ namespace mem {
         return PFN_TO_PAGE(entry.PageFrameNumber);
       };
 
-      // walk page table hierarchy and create entries as needed
-      log("INFO", "processing VA: 0x%llx (page %zu/%zu)", va, i + 1, page_count);
+      log("INFO", "processing VA: 0x%llx (page %zu/%zu, type: %s)", va, i + 1, page_count,
+          mem_type == memory_type::HUGE_PAGE    ? "1GB"
+          : mem_type == memory_type::LARGE_PAGE ? "2MB"
+                                                : "4KB");
 
       // PML4E -> PDPTE
       PML4E_64 pml4e;
@@ -443,13 +468,32 @@ namespace mem {
       if (!pdpt_phys)
         return STATUS_INVALID_ADDRESS;
 
-      // PDPTE -> PDE
+      if (mem_type == memory_type::HUGE_PAGE) {
+        // create 1GB huge page entry at PDPTE level
+        PDPTE_1GB_64 pdpte = {0};
+        pdpte.Flags = 0;
+        pdpte.Present = 1;
+        pdpte.Write = 1;
+        pdpte.Supervisor = 1;
+        pdpte.LargePage = 1;
+        pdpte.ExecuteDisable = 0;
+        pdpte.PageFrameNumber = pfn;
+
+        auto pdpte_addr = pdpt_phys + h.AsIndex.Pdpt * sizeof(pdpte);
+        physical::write_physical_address(pdpte_addr, &pdpte, sizeof(pdpte));
+
+        page_table::flush_caches(page);
+        log("INFO", "created 1GB huge page PDPTE at 0x%llx", pdpte_addr);
+        continue;  // skip PDE and PTE levels for 1GB pages
+      }
+
+      // PDPTE -> PDE (for 2MB and 4KB pages)
       PDPTE_64 pdpte;
       auto pd_phys = get_or_create_table(pdpt_phys, h.AsIndex.Pdpt, pdpte);
       if (!pd_phys)
         return STATUS_INVALID_ADDRESS;
 
-      if (use_large_page) {
+      if (mem_type == memory_type::LARGE_PAGE) {
         // create 2MB large page entry
         PDE_2MB_64 pde = {0};
         pde.Flags = 0;
@@ -463,10 +507,9 @@ namespace mem {
         auto pde_addr = pd_phys + h.AsIndex.Pd * sizeof(pde);
         physical::write_physical_address(pde_addr, &pde, sizeof(pde));
 
-        // flush caches after writing large page PDE
         page_table::flush_caches(page);
-        log("INFO", "created 2MB large page PDE at 0x%llx, flushed caches for page 0x%p", pde_addr,
-            page);
+
+        log("INFO", "created 2MB large page PDE at 0x%llx", pde_addr);
       } else {
         // PDE -> PTE for 4KB pages
         PDE_64 pde;
@@ -486,14 +529,15 @@ namespace mem {
         auto pte_addr = pt_phys + h.AsIndex.Pt * sizeof(pte);
         physical::write_physical_address(pte_addr, &pte, sizeof(pte));
 
-        // flush caches after writing PTE
         page_table::flush_caches(page);
-        log("INFO", "created 4KB page PTE at 0x%llx, flushed caches for page 0x%p", pte_addr, page);
+        log("INFO", "created 4KB page PTE at 0x%llx", pte_addr);
       }
     }
 
-    log("SUCCESS", "completed page table creation for %zu pages, performed final TLB flush",
-        page_count);
+    log("SUCCESS", "completed page table creation for %zu pages of type %s", page_count,
+        mem_type == memory_type::HUGE_PAGE    ? "1GB"
+        : mem_type == memory_type::LARGE_PAGE ? "2MB"
+                                              : "4KB");
 
     return STATUS_SUCCESS;
   }
@@ -502,15 +546,14 @@ namespace mem {
    * @param local_pid Current process ID (unused)
    * @param target_pid Target process ID to inject into
    * @param size Size of memory region needed
-   * @param use_large_page Whether to use 2MB pages
    * @return Virtual address in target process, or nullptr on failure
    *
    * Scans the target process's main module .text section for PTEs with null page
    * frame numbers and replaces them with hidden physical pages. Dangerous
    * technique that may cause instability.
    */
-  auto hijack_null_pfn(const uint32_t local_pid, const uint32_t target_pid, const size_t size,
-                       const bool use_large_page) -> void* {
+  auto hijack_null_pfn(const uint32_t local_pid, const uint32_t target_pid, const size_t size)
+      -> void* {
     const size_t page_mask = PAGE_SIZE - 1;
     const size_t aligned_size = (size + page_mask) & ~page_mask;
     const size_t page_count = aligned_size >> PAGE_SHIFT;
@@ -704,7 +747,7 @@ namespace mem {
     log("INFO", "selected base address: 0x%llx", base_va);
 
     auto write_pt_status =
-        mem::write_page_tables(target_dir_base, base_va, page_count, use_large_page);
+        mem::write_page_tables(target_dir_base, base_va, page_count, NORMAL_PAGE);
 
     if (!NT_SUCCESS(write_pt_status)) {
       log("ERROR", "failed to write page tables");
@@ -719,14 +762,13 @@ namespace mem {
    * @param local_pid Current process ID (unused)
    * @param target_pid Target process ID to inject into
    * @param size Size of memory region needed
-   * @param use_large_page Whether to use 2MB pages
    * @return Virtual address in target process, or nullptr on failure
    *
    * Enumerates loaded modules and finds gaps in virtual address space large
    * enough for the requested allocation, then maps hidden pages at that location.
    */
   auto allocate_between_modules(const uint32_t local_pid, const uint32_t target_pid,
-                                const size_t size, const bool use_large_page) -> void* {
+                                const size_t size) -> void* {
     const size_t page_mask = PAGE_SIZE - 1;
     const size_t aligned_size = (size + page_mask) & ~page_mask;
     const size_t page_count = aligned_size >> PAGE_SHIFT;
@@ -817,7 +859,7 @@ namespace mem {
     log("INFO", "selected base address: 0x%llx", base_va);
 
     auto write_pt_status =
-        mem::write_page_tables(target_dir_base, base_va, page_count, use_large_page);
+        mem::write_page_tables(target_dir_base, base_va, page_count, NORMAL_PAGE);
 
     if (!NT_SUCCESS(write_pt_status)) {
       log("ERROR", "failed to write page tables");
@@ -832,7 +874,7 @@ namespace mem {
    * @param local_pid Current process ID (unused)
    * @param target_pid Target process ID to inject into
    * @param size Size of memory region needed
-   * @param use_large_page Whether to use 2MB pages
+   * @param mem_type Whether to use 4KB, 2MB or 1GB pages
    * @param use_high_address Whether to use kernel-space (high) or user-space
    * (low) addresses
    * @return Virtual address in target process, or nullptr on failure
@@ -841,13 +883,19 @@ namespace mem {
    * spaces with base address entropy for maximum stealth.
    */
   auto allocate_at_non_present_pml4e(const uint32_t local_pid, const uint32_t target_pid,
-                                     const size_t size, const bool use_large_page,
+                                     const size_t size, const memory_type mem_type,
                                      const bool use_high_address) -> void* {
-    const size_t STANDARD_PAGE_SIZE = 0x1000;
-    const size_t LARGE_PAGE_SIZE = 0x200000;
-    const size_t page_size = use_large_page ? LARGE_PAGE_SIZE : STANDARD_PAGE_SIZE;
+    const size_t STANDARD_PAGE_SIZE = 0x1000;  // 4KB
+    const size_t LARGE_PAGE_SIZE = 0x200000;   // 2MB
+    const size_t HUGE_PAGE_SIZE = 0x40000000;  // 1GB
+
+    const size_t page_size = (mem_type == memory_type::HUGE_PAGE)    ? HUGE_PAGE_SIZE
+                             : (mem_type == memory_type::LARGE_PAGE) ? LARGE_PAGE_SIZE
+                                                                     : STANDARD_PAGE_SIZE;
     const size_t page_mask = page_size - 1;
-    const size_t page_shift = use_large_page ? 21 : 12;
+    const size_t page_shift = (mem_type == memory_type::HUGE_PAGE)    ? 30
+                              : (mem_type == memory_type::LARGE_PAGE) ? 21
+                                                                      : 12;
 
     const size_t aligned_size = (size + page_mask) & ~page_mask;
     const size_t page_count = aligned_size >> page_shift;
@@ -903,12 +951,14 @@ namespace mem {
     }
 
     uintptr_t base_va = page_table::construct_randomized_virtual_address(
-        selection.selected_index, use_high_address, use_large_page);
+        selection.selected_index, use_high_address, mem_type);
 
-    log("INFO", "selected base address: 0x%llx", base_va);
+    log("INFO", "selected base address: 0x%llx for %s pages", base_va,
+        mem_type == memory_type::HUGE_PAGE    ? "1GB"
+        : mem_type == memory_type::LARGE_PAGE ? "2MB"
+                                              : "4KB");
 
-    auto write_pt_status =
-        mem::write_page_tables(target_dir_base, base_va, page_count, use_large_page);
+    auto write_pt_status = mem::write_page_tables(target_dir_base, base_va, page_count, mem_type);
     if (!NT_SUCCESS(write_pt_status)) {
       validation::release_process_rundown_protection(target_process);
       log("ERROR", "failed to write page tables, NTSTATUS: 0x%08X", write_pt_status);
@@ -916,7 +966,6 @@ namespace mem {
     }
 
     validation::release_process_rundown_protection(target_process);
-
     return reinterpret_cast<void*>(base_va);
   }
 

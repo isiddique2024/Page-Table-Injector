@@ -310,7 +310,6 @@ namespace page_table {
       if (pte) {
         if (pte->Present) {
           pte->ExecuteDisable = execute_disable;
-          // pte->Write = true;
 
           log("INFO", "modified PTE - Write: %d, ExecuteDisable: %d", pte->Write,
               pte->ExecuteDisable);
@@ -327,7 +326,6 @@ namespace page_table {
       if (pde) {
         if (pde->Present && pde->LargePage) {
           pde->ExecuteDisable = execute_disable;
-          // pde->Write = true;
 
           log("INFO", "modified pde - Write: %d, ExecuteDisable: %d", pde->Write,
               pde->ExecuteDisable);
@@ -496,13 +494,19 @@ namespace page_table {
    * - Large pages (2MB): Randomizes PDPTE selection (bits 30-38, 1GB regions)
    * - Small pages (4KB): Randomizes PDE selection (bits 21-29, 2MB regions)
    */
-  auto generate_address_entropy(bool use_large_page) -> uint64_t {
-    if (use_large_page) {
-      // For large pages, randomize PDPTE selection (each PDPTE covers 1GB)
-      return (static_cast<uint64_t>(globals::rand() % 512) << 30);
-    } else {
-      // For small pages, randomize PDE selection (each PDE covers 2MB)
-      return (static_cast<uint64_t>(globals::rand() % 512) << 21);
+  auto generate_address_entropy(memory_type mem_type) -> uint64_t {
+    switch (mem_type) {
+      case memory_type::HUGE_PAGE:
+        // For 2MB large pages, randomize PDPTE selection (each PDPTE covers 1GB)
+        return (static_cast<uint64_t>(globals::rand() % 512) << 30);
+      case memory_type::LARGE_PAGE:
+        // For 2MB large pages, randomize PDPTE selection (each PDPTE covers 1GB)
+        return (static_cast<uint64_t>(globals::rand() % 512) << 30);
+
+      case memory_type::NORMAL_PAGE:
+      default:
+        // For 4KB pages, randomize PDE selection (each PDE covers 2MB)
+        return (static_cast<uint64_t>(globals::rand() % 512) << 21);
     }
   }
 
@@ -534,15 +538,13 @@ namespace page_table {
    * @return Complete virtual address with base address and entropy
    */
   auto construct_randomized_virtual_address(uint32_t selected_pml4_index, bool use_high_address,
-                                            bool use_large_page) -> uintptr_t {
-    uint64_t additional_offset = generate_address_entropy(use_large_page);
+                                            memory_type mem_type) -> uintptr_t {
+    uint64_t additional_offset = generate_address_entropy(mem_type);
     uintptr_t base_va;
 
     if (use_high_address) {
-      // kernel space address
       base_va = 0xFFFF000000000000ULL | get_pml4e(selected_pml4_index) | additional_offset;
     } else {
-      // user space addres
       base_va = get_pml4e(selected_pml4_index) | additional_offset;
     }
 

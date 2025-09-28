@@ -41,10 +41,11 @@ int main(int argc, char* argv[]) {
   settings::driver_alloc_mode driver_alloc_mode =
       settings::driver_alloc_mode::ALLOC_IN_SYSTEM_CONTEXT;
   settings::memory_type driver_mem_type = settings::memory_type::NORMAL_PAGE;
-  settings::hide_type driver_hide_type = settings::hide_type::SET_PARITY_ERROR;
+  settings::hide_type driver_hide_type = settings::hide_type::NONE;
   std::uint32_t dll_mem_type = g_driver_manager->memory_type::NORMAL_PAGE;
-  std::uint32_t dll_alloc_mode = g_driver_manager->alloc_mode::ALLOC_BETWEEN_LEGIT_MODULES;
-  settings::hide_type dll_hide_type = settings::hide_type::SET_PARITY_ERROR;
+  std::uint32_t dll_alloc_mode = g_driver_manager->alloc_mode::ALLOC_AT_LOW_ADDRESS;
+  settings::hide_type dll_hide_type = settings::hide_type::NONE;
+  settings::experimental_options selected_option = settings::experimental_options::NONE;
   std::string hook_module = "user32.dll";
   std::string hook_function = "GetMessageW";
   std::string target_module = "";
@@ -92,6 +93,10 @@ int main(int argc, char* argv[]) {
       {"set_parity_error", settings::hide_type::SET_PARITY_ERROR},
       {"set_lock_bit", settings::hide_type::SET_LOCK_BIT},
       {"hide_translation", settings::hide_type::HIDE_TRANSLATION}};
+
+  auto experimental_options_map = std::map<std::string, settings::experimental_options>{
+      {"none", settings::experimental_options::NONE},
+      {"manipulate_system_partition", settings::experimental_options::MANIPULATE_SYSTEM_PARTITION}};
 
   driver_group->add_option("--driver-alloc", driver_alloc_mode, "Driver allocation strategy")
       ->transform(CLI::CheckedTransformer(driver_alloc_map, CLI::ignore_case))
@@ -182,6 +187,17 @@ int main(int argc, char* argv[]) {
   hook_group->add_option("--target-module", target_module,
                          "Module whose IAT to hook (empty = main module)");
 
+  auto* experimental_group =
+      app.add_option_group("Experimental Options", "Extra functionality and tweaks");
+
+  experimental_group
+      ->add_option("--experimental", selected_option, "Experimental operations to perform")
+      ->transform(CLI::CheckedTransformer(experimental_options_map, CLI::ignore_case))
+      ->capture_default_str()
+      ->description("none: No experimental operations (default)\n"
+                    "manipulate_system_partition: modify MiSystemPartition to affect "
+                    "MmGetPhysicalMemoryRanges");
+
   // utility options
   app.add_flag("-v,--verbose", verbose, "Enable detailed logging");
   app.add_flag("--dry-run", dry_run, "Show configuration without injecting");
@@ -229,16 +245,6 @@ Note: Use quotes around window names with spaces
     app.parse(argc, argv);
   } catch (const CLI::ParseError& e) {
     return app.exit(e);
-  }
-
-  // validate and warnings
-  if (driver_mem_type == settings::memory_type::HUGE_PAGE ||
-      dll_mem_type == g_driver_manager->memory_type::HUGE_PAGE) {
-    debug_log("WARNING", "huge pages (1GB) are not yet supported, falling back to large pages");
-    if (driver_mem_type == settings::memory_type::HUGE_PAGE)
-      driver_mem_type = settings::memory_type::LARGE_PAGE;
-    if (dll_mem_type == g_driver_manager->memory_type::HUGE_PAGE)
-      dll_mem_type = g_driver_manager->memory_type::LARGE_PAGE;
   }
 
   // warn about dangerous hide options
@@ -304,6 +310,16 @@ Note: Use quotes around window names with spaces
       std::cout << "Thread: DLL entry point execution\n";
     }
 
+    if (selected_option != settings::experimental_options::NONE) {
+      std::string experimental_str;
+      for (auto& [name, val] : experimental_options_map)
+        if (val == selected_option) {
+          experimental_str = name;
+          break;
+        }
+      std::cout << "Experimental: " << experimental_str << "\n";
+    }
+
     std::cout << std::string(40, '=') << "\n\n";
 
     if (dry_run) {
@@ -328,7 +344,8 @@ Note: Use quotes around window names with spaces
                                   static_cast<settings::driver_alloc_mode>(driver_alloc_mode),
                                   static_cast<settings::memory_type>(driver_mem_type),
                                   static_cast<settings::hide_type>(driver_hide_type),
-                                  static_cast<settings::hide_type>(dll_hide_type));
+                                  static_cast<settings::hide_type>(dll_hide_type),
+                                  static_cast<settings::experimental_options>(selected_option));
 
   if (!status_map_driver || exit_code == 0xC0000001) {
     debug_log("ERROR", "failed to map driver");

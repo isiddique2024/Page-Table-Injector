@@ -32,7 +32,7 @@ https://github.com/user-attachments/assets/1f3a2385-42e8-497b-a738-0909e9a77cf6
 - **DLL Memory Page Types**:
     - Normal Pages (`normal`) - 4KB
     - Large Pages (`large`) - 2MB
-    - Huge Pages (`huge`) - 1GB (not yet supported)
+    - Huge Pages (`huge`) - 1GB
 - **Advanced Memory Hiding Mechanisms**:
     - No hiding (`none`) - Standard memory allocation
     - PFN exists bit manipulation (`pfn_exists_bit`) - Returns STATUS_INVALID_ADDRESS if copied by MmCopyMemory
@@ -40,6 +40,9 @@ https://github.com/user-attachments/assets/1f3a2385-42e8-497b-a738-0909e9a77cf6
     - Parity error bit (`set_parity_error`) - Returns STATUS_HARDWARE_MEMORY_ERROR on memory copy (default)
     - Lock bit anti-debug (`set_lock_bit`) - Causes system crash if page is copied by MmCopyMemory
     - Hide translation (`hide_translation`) - Sets the PteAddress field within the MmPfnDatabase entry to 0, this causes MmGetVirtualForPhysical to translate the physical address to the wrong virtual address, 0 in this case
+- **Experimental Mechanisms**:
+    - No hiding (`none`) - No experimental operations
+    - Manipulate MiSystemPartition (`manipulate_mi_system_partition`) - Results in Windows reporting the incorrect OS physical memory ranges
 - **Support for Various Payloads**:
     - Load DLL from disk
     - Use embedded in-memory DLL (MessageBox by default)
@@ -134,31 +137,31 @@ pt-injector Notepad -d memory -e thread --dll-alloc hyperspace --dll-hide set_pa
   - `normal`: 4KB pages (default)
   - `large`: 2MB pages
   - `huge`: 1GB pages (not supported yet)
-- **--driver-hide**: Driver memory hiding mechanism (default: set_parity_error)
-  - `none`: No memory hiding
+- **--driver-hide**: Driver memory hiding mechanism (default: none)
+  - `none`: No memory hiding (default)
   - `pfn_exists_bit`: Returns STATUS_INVALID_ADDRESS on memory copy
   - `mi_remove_physical_memory`: Removes pages from physical memory ranges
-  - `set_parity_error`: Returns STATUS_HARDWARE_MEMORY_ERROR (default)
+  - `set_parity_error`: Returns STATUS_HARDWARE_MEMORY_ERROR
   - `set_lock_bit`: Anti-debug mechanism - crashes system if page copied
   - `hide_translation`: MmGetVirtualForPhysical will return the incorrect virtual address that's mapped by the PTE, 0 in this case.
 
 #### DLL Options
 
-- **--dll-alloc**: DLL allocation strategy (default: between-modules)
+- **--dll-alloc**: DLL allocation strategy (default: low-address)
   - `inside-main`: Hijack PTEs in main module
-  - `between-modules`: Allocate between legitimate modules (default)
-  - `low-address`: Usermode space (PML4 0-255)
+  - `between-modules`: Allocate between legitimate modules
+  - `low-address`: Usermode space (PML4 0-255) (default)
   - `high-address`: Kernel space (PML4 256-511)
   - `hyperspace`: Isolated memory context with cloned address space of target process
 - **--dll-memory**: DLL memory page size (default: normal)
   - `normal`: 4KB pages (default)
   - `large`: 2MB pages
   - `huge`: 1GB pages (not supported yet)
-- **--dll-hide**: DLL memory hiding mechanism (default: set_parity_error)
-  - `none`: No memory hiding
+- **--dll-hide**: DLL memory hiding mechanism (default: none)
+  - `none`: No memory hiding (default)
   - `pfn_exists_bit`: Returns STATUS_INVALID_ADDRESS on memory copy
   - `mi_remove_physical_memory`: Removes pages from physical memory ranges
-  - `set_parity_error`: Returns STATUS_HARDWARE_MEMORY_ERROR (default)
+  - `set_parity_error`: Returns STATUS_HARDWARE_MEMORY_ERROR
   - `set_lock_bit`: Anti-debug mechanism - crashes system if page copied
   - `hide_translation`: MmGetVirtualForPhysical will return the incorrect virtual address that's mapped by the PTE, 0 in this case.
 
@@ -166,6 +169,11 @@ pt-injector Notepad -d memory -e thread --dll-alloc hyperspace --dll-hide set_pa
 - **--hook-module**: Module to hook in the IAT (default: user32.dll)
 - **--hook-function**: Function to hook in the IAT (default: GetMessageW)  
 - **--target-module**: Module whose IAT to hook (empty = main module)
+
+#### Experimental Options
+- **--experimental**: Experimental operations to perform (default: none)
+  - `none`: No experimental operations (default)
+  - `manipulate_system_partition`: Modify MiSystemPartition to affect physical memory ranges (WARNING: May cause system instability)
 
 #### Utility Options
 - **-v, --verbose**: Enable detailed logging
@@ -302,6 +310,29 @@ The tool uses three main techniques for the DLL memory allocation:
 3. **At Non Present PML4E (Low)**: Allocates memory at a non present PML4E address in usermode space (PML4 index 0-255)
 4. **At Non Present PML4E (High)**: Allocates memory at a non present PML4E address in kernel space (PML4 index 256-511)
 5. **Hyperspace**: Creates an isolated memory context with a cloned address space of the target process, only specific threads have access to this context, thus providing the highest level of stealth when it comes specifically to memory inspection.
+
+### Experimental Options
+
+The tool has one experimental feature option for hiding memory:
+
+1. **Manipulate MiSystemPartition**: This technique results in Windows reporting the incorrect physical memory ranges, screenshots of RamMap and DebugView are shown below:
+
+
+<div align="center">  
+<b>BEFORE Manipulating MiSystemPartition:</b>  
+</div>
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/c08f5f2a-2ace-47f9-b12a-54ebddb5a37c">
+</p>
+<div align="center">  
+<b>AFTER Manipulating MiSystemPartition:</b>   
+</div>
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/118209cb-420f-4876-99a1-13dcf07e3179">
+</p>
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/3de87137-e571-481b-9fcf-cf169bf72bcf">
+</p>
 
 ## Security Notes
 

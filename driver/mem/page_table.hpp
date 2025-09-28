@@ -202,6 +202,6 @@ namespace page_table {
    * @return Complete virtual address with base address and entropy
    */
   auto construct_randomized_virtual_address(uint32_t selected_pml4_index, bool use_high_address,
-                                            bool use_large_page) -> uintptr_t;
+                                            memory_type mem_type) -> uintptr_t;
 
 }  // namespace page_table

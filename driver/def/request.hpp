@@ -54,7 +54,7 @@ struct allocate_independent_pages_request {
   std::uint32_t target_tid;
   void* address;
   size_t size;
-  bool use_large_page;
+  memory_type mem_type;
   std::uint32_t mode;
 };
 

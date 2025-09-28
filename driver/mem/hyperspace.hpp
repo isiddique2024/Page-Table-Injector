@@ -185,7 +185,7 @@ namespace hyperspace {
    * Allocates memory within the hyperspace context using the same stealth
    * techniques as regular allocation but within the isolated address space.
    */
-  auto allocate_in_hyperspace(uint32_t target_pid, size_t size, bool use_large_page) -> void*;
+  auto allocate_in_hyperspace(uint32_t target_pid, size_t size, memory_type mem_type) -> void*;
 
   /**
    * @brief Switch a thread's execution context to hyperspace

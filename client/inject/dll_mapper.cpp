@@ -364,7 +364,7 @@ bool dll_mapper_t::execute_via_iat_hook(uint32_t pid, uint32_t tid, uintptr_t ma
   debug_log("INFO", "found IAT entry at 0x%llx", iat_entry);
 
   const auto remote_shellcode = g_driver_manager->allocate_independent_pages(
-      GetCurrentProcessId(), pid, tid, 0x1000, 0, alloc_mode);
+      GetCurrentProcessId(), pid, tid, 0x1000, (driver_manager_t::memory_type)0, alloc_mode);
   if (!remote_shellcode) {
     debug_log("ERROR", "failed to allocate remote shellcode");
     return false;
@@ -497,7 +497,7 @@ bool dll_mapper_t::execute_via_swhk(uint32_t pid, uint32_t tid, void* alloc_base
   }
 
   const auto remote_shellcode = g_driver_manager->allocate_independent_pages(
-      GetCurrentProcessId(), pid, tid, 0x1000, 0, alloc_mode);
+      GetCurrentProcessId(), pid, tid, 0x1000, (driver_manager_t::memory_type)0, alloc_mode);
   if (!remote_shellcode) {
     debug_log("ERROR", "failed to allocate remote shellcode");
     return false;

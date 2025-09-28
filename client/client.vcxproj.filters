@@ -33,6 +33,5 @@
     <ClInclude Include="driver_mapper\utils.hpp" />
     <ClInclude Include="driver_mapper\driver_mapper.hpp" />
     <ClInclude Include="utils\logging.h" />
-    <ClInclude Include="driver_mapper\def.h" />
   </ItemGroup>
 </Project>

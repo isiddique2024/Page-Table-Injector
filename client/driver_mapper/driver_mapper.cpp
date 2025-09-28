@@ -61,7 +61,9 @@ auto driver_mapper_t::map_driver(std::vector<std::uint8_t>& driver_data, std::ui
                                  bool pass_alloc_address_as_first_param, NTSTATUS* exit_code,
                                  settings::driver_alloc_mode alloc_mode,
                                  settings::memory_type mem_type, settings::hide_type driver_hide,
-                                 settings::hide_type dll_hide) -> std::uint64_t {
+                                 settings::hide_type dll_hide,
+                                 settings::experimental_options experimental_options)
+    -> std::uint64_t {
   mapper_log("INFO", "starting driver mapping process...");
 
   // initialize if needed
@@ -129,6 +131,7 @@ auto driver_mapper_t::map_driver(std::vector<std::uint8_t>& driver_data, std::ui
   offsets_.DriverSize = final_size;
   offsets_.DriverHideType = static_cast<std::uint32_t>(driver_hide);
   offsets_.DllHideType = static_cast<std::uint32_t>(dll_hide);
+  offsets_.ExperimentalOptions = static_cast<std::uint32_t>(experimental_options);
 
   // call driver entry
   mapper_log("SUCCESS", "calling driver entry at: 0x%llx", entry_point);
@@ -611,6 +614,7 @@ auto driver_mapper_t::resolve_pdb_offsets() -> pdb_offsets {
       0,
       0,
       0,
+      0,
       // memory management (Mm) functions
       ntoskrnl_base + pdb_get_rva(&pdb, "MmGetPhysicalAddress"),
       ntoskrnl_base + pdb_get_rva(&pdb, "MmPfnDatabase"),
@@ -628,6 +632,7 @@ auto driver_mapper_t::resolve_pdb_offsets() -> pdb_offsets {
       ntoskrnl_base + pdb_get_rva(&pdb, "MmGetPhysicalMemoryRanges"),
       ntoskrnl_base + pdb_get_rva(&pdb, "MmIsAddressValid"),
       ntoskrnl_base + pdb_get_rva(&pdb, "MmAllocateSecureKernelPages"),
+      ntoskrnl_base + pdb_get_rva(&pdb, "MmPhysicalMemoryBlock"),
 
       // memory info (Mi) functions
       ntoskrnl_base + pdb_get_rva(&pdb, "MiGetVmAccessLoggingPartition"),

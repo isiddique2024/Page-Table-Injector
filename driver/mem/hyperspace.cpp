@@ -831,17 +831,27 @@ namespace hyperspace {
    * @brief Allocate memory within hyperspace context using unused PML4 entries
    * @param target_pid Target process ID (unused in current implementation)
    * @param size Size of memory to allocate
-   * @param use_large_page Whether to use 2MB large pages
+   * @param mem_type Whether to use 4KB, 2MB or 1GB pages
    * @return Virtual address of allocated memory, or nullptr on failure
    *
    * Allocates memory within the hyperspace context using the same stealth
    * techniques as regular allocation but within the isolated address space.
    */
-  auto allocate_in_hyperspace(uint32_t target_pid, size_t size, bool use_large_page) -> void* {
-    const size_t page_size = use_large_page ? 0x200000 : PAGE_SIZE;
+  auto allocate_in_hyperspace(uint32_t target_pid, size_t size, memory_type mem_type) -> void* {
+    const size_t STANDARD_PAGE_SIZE = 0x1000;  // 4KB
+    const size_t LARGE_PAGE_SIZE = 0x200000;   // 2MB
+    const size_t HUGE_PAGE_SIZE = 0x40000000;  // 1GB
+
+    const size_t page_size = (mem_type == memory_type::HUGE_PAGE)    ? HUGE_PAGE_SIZE
+                             : (mem_type == memory_type::LARGE_PAGE) ? LARGE_PAGE_SIZE
+                                                                     : STANDARD_PAGE_SIZE;
     const size_t page_mask = page_size - 1;
+    const size_t page_shift = (mem_type == memory_type::HUGE_PAGE)    ? 30
+                              : (mem_type == memory_type::LARGE_PAGE) ? 21
+                                                                      : 12;
+
     const size_t aligned_size = (size + page_mask) & ~page_mask;
-    const size_t page_count = aligned_size / page_size;
+    const size_t page_count = aligned_size >> page_shift;
 
     PEPROCESS target_process = globals::ctx.clone_peproc;
 
@@ -875,15 +885,18 @@ namespace hyperspace {
     }
 
     // construct randomized virtual address
-    uintptr_t base_va = page_table::construct_randomized_virtual_address(selection.selected_index,
-                                                                         false, use_large_page);
+    uintptr_t base_va = page_table::construct_randomized_virtual_address(
+        selection.selected_index, memory_space::USER_MODE, mem_type);
 
-    log("INFO", "selected base address: 0x%llx", base_va);
+    log("INFO", "selected base address: 0x%llx for %s pages", base_va,
+        mem_type == memory_type::HUGE_PAGE    ? "1GB"
+        : mem_type == memory_type::LARGE_PAGE ? "2MB"
+                                              : "4KB");
 
-    auto write_pt_status = mem::write_page_tables(globals::ctx.hyperspace_pml4_pa, base_va,
-                                                  page_count, use_large_page);
-
+    auto write_pt_status = mem::write_page_tables(target_dir_base, base_va, page_count, mem_type);
     if (!NT_SUCCESS(write_pt_status)) {
+      validation::release_process_rundown_protection(target_process);
+      globals::obf_dereference_object(target_process);
       log("ERROR", "failed to write page tables, NTSTATUS: 0x%08X", write_pt_status);
       return nullptr;
     }

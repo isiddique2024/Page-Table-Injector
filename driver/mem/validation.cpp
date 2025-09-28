@@ -27,6 +27,14 @@ namespace validation {
   }
 
   auto is_pfn_valid(uintptr_t pfn) -> bool {
+    // since manipulate_system_partition messes with physical memory ranges, this is necessary for
+    // the function to proceed if injecting more than once per boot
+    if (static_cast<experimental_options>(globals::experimental_options) !=
+        experimental_options::NONE) {
+      log("SUCCESS", "skipped is_pfn_valid check on PFN 0x%llx due to experimental_options", pfn);
+      return true;
+    }
+
     return pfn >= globals::mm_lowest_physical_page && pfn <= globals::mm_highest_physical_page;
   }
 

@@ -21,6 +21,7 @@ namespace globals {
 
   extern uint32_t driver_hide_type;
   extern uint32_t dll_hide_type;
+  extern uint32_t experimental_options;
 
   extern uintptr_t driver_alloc_base;
   extern size_t driver_size;

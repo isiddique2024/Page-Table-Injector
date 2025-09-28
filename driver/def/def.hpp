@@ -44,6 +44,22 @@ enum hide_type {
   HIDE_TRANSLATION
 };
 
+enum memory_type {
+  NORMAL_PAGE,
+  LARGE_PAGE,
+  HUGE_PAGE
+};
+
+enum memory_space : bool {
+  USER_MODE = false,
+  KERNEL_MODE = true
+};
+
+enum class experimental_options {
+  NONE,
+  MANIPULATE_SYSTEM_PARTITION
+};
+
 // 0x4 bytes (sizeof)
 enum _KTHREAD_STATE {
   Initialized = 0,
@@ -715,6 +731,7 @@ struct pdb_offsets {
   uintptr_t DriverSize;
   uint32_t DriverHideType;
   uint32_t DllHideType;
+  uint32_t ExperimentalOptions;
 
   // memory management (Mm) functions
   uintptr_t MmGetPhysicalAddress;
@@ -733,6 +750,7 @@ struct pdb_offsets {
   uintptr_t MmGetPhysicalMemoryRanges;
   uintptr_t MmIsAddressValid;
   uintptr_t MmAllocateSecureKernelPages;
+  uintptr_t MmPhysicalMemoryBlock;
 
   // memory info (Mi) functions
   uintptr_t MiGetVmAccessLoggingPartition;

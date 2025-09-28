@@ -35,7 +35,6 @@
     <ClCompile Include="utils\window_manager.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="driver_mapper\def.h" />
     <ClInclude Include="lib\cli.h" />
     <ClInclude Include="driver\driver_manager.hpp" />
     <ClInclude Include="driver\driver_shell.h" />
