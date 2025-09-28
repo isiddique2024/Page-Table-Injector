@@ -318,19 +318,20 @@ The tool has one experimental feature option for hiding memory:
 1. **Manipulate MiSystemPartition**: This technique results in Windows reporting the incorrect physical memory ranges, screenshots of RamMap and DebugView are shown below:
 
 
-<div align="center">  
+<div align="left">  
 <b>BEFORE Manipulating MiSystemPartition:</b>  
 </div>
-<p align="center">
+<p align="left">
+
   <img src="https://github.com/user-attachments/assets/c08f5f2a-2ace-47f9-b12a-54ebddb5a37c">
 </p>
-<div align="center">  
+<div align="left">  
 <b>AFTER Manipulating MiSystemPartition:</b>   
 </div>
-<p align="center">
+<p align="left">
   <img src="https://github.com/user-attachments/assets/118209cb-420f-4876-99a1-13dcf07e3179">
 </p>
-<p align="center">
+<p align="left">
   <img src="https://github.com/user-attachments/assets/3de87137-e571-481b-9fcf-cf169bf72bcf">
 </p>
 
